@@ -1,0 +1,17 @@
+{
+  "name": "Forge — idées structurées",
+  "short_name": "Forge",
+  "description": "Dicte une idée, structure-la, éprouve-la, passe à l'action.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#110c1c",
+  "theme_color": "#110c1c",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

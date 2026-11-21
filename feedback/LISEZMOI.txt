@@ -1,0 +1,2 @@
+Dépose ici les fichiers forge-signalements-*.json exportés depuis Réglages.
+Ils sont traités puis supprimés par Claude (le contenu passe dans tests/feedback.js).
