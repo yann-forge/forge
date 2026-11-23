@@ -93,6 +93,10 @@
       <button id="btn-rep-clear" class="btn">Effacer</button>
     </div>
     <p class="muted small" id="app-version"></p>
+    <div class="row wrap" id="install-box" hidden>
+      <p class="muted small" id="install-status" style="flex:1;margin:0"></p>
+      <button id="btn-install" class="btn primary" hidden>Installer Forge</button>
+    </div>
     <div class="row wrap" id="offline-box" hidden>
       <p class="muted small" id="offline-status" style="flex:1;margin:0"></p>
       <button id="btn-offline-repair" class="btn">Réparer le hors ligne</button>
@@ -110,6 +114,7 @@
 <div id="modal" class="modal" hidden><div class="modal-box"><p id="modal-msg"></p>
   <div class="row"><button class="btn" id="modal-cancel">Annuler</button><button class="btn danger" id="modal-ok">Confirmer</button></div></div></div>
 <div id="sheet" class="sheet" hidden><div class="sheet-box"><div class="sheet-grip"></div><div id="sheet-body"></div></div></div>
+<script src="lexique.js"></script>
 <script src="engine.js"></script>
 <script src="app.js"></script>
 <script src="report.js"></script>

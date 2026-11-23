@@ -173,6 +173,27 @@ function initReports() {
       $('#offline-status').textContent = 'Téléchargement des fichiers…'; askSw('repair');
     });
   }
+  /* Installation sur l'appareil (Chrome, Brave, Edge, Android) */
+  if ($('#install-box')) {
+    const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+    const box = $('#install-box'), st = $('#install-status'), btn = $('#btn-install');
+    let deferred = null;
+    if (!standalone) {
+      box.hidden = false;
+      st.textContent = 'Installation : si aucun bouton n\u2019apparaît, menu du navigateur > « Installer Forge » (Brave : ☰ > Enregistrer et partager > Installer la page en tant qu\u2019application). Si Forge est déjà installée, le navigateur propose plutôt de l\u2019ouvrir.';
+    }
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault(); deferred = e; box.hidden = false; btn.hidden = false;
+      st.textContent = 'Forge peut s\u2019installer sur cet appareil : elle s\u2019ouvrira dans sa propre fenêtre, même sans réseau.';
+      toast('Forge peut s\u2019installer : Réglages > Installer');
+    });
+    btn.addEventListener('click', async () => {
+      if (!deferred) return; deferred.prompt();
+      const r = await deferred.userChoice; deferred = null; btn.hidden = true;
+      if (r.outcome === 'accepted') st.textContent = 'Forge est installée.';
+    });
+    window.addEventListener('appinstalled', () => { btn.hidden = true; st.textContent = 'Forge est installée.'; });
+  }
   /* Annonce d'une mise à jour reçue */
   try {
     const seen = localStorage.getItem('forge3.version');

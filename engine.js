@@ -4,6 +4,10 @@
    Produit les mêmes structures de données que l'analyse par Claude. */
 (function (root) {
   'use strict';
+  /* Vocabulaire : fichier lexique.js (données seulement, modifiable sans toucher à la logique) */
+  const LEX = (typeof module !== 'undefined' && module.exports && typeof require === 'function') ? require('./lexique.js') : root.ForgeLexique;
+  if (!LEX) throw new Error('lexique.js doit être chargé avant engine.js');
+  const { VAGUE, AUDIENCE, ROLES, EQUIP, COMPONENTS, MAKE_OBJ, TECH_GEAR, VEHICLE, DOMAINS, GEAR, NON_PERSONNES } = LEX;
 
   /* =========================================================
      1. Outils texte
@@ -29,7 +33,7 @@
     while ((m = re.exec(text))) { const t = m[0]; const lead = t.length - t.trimStart().length; const s = t.trim(); if (s.length > 1) out.push({ start: m.index + lead, end: m.index + lead + s.length, text: s }); }
     return out;
   }
-  const CLAUSE_SPLIT = /,|\s*:\s+(?=[a-z])|\s+et\s+(?=(?:je|j'|il|on|nous|tu|faut|faudrait|puis|ensuite|apres|aussi|demander|acheter|contacter|faire|trouver|monter|creer|preparer|reserver|enregistrer|envoyer|appeler|ecrire|lancer|organiser|commander|tester|souder|fabriquer|construire)\b)|\s+mais\s+|\s+puis\s+|\s+ensuite\s+|\s+donc\s+|\s+sinon\s+|\s*\(|\)/g;
+  const CLAUSE_SPLIT = /,(?!\d)|\s*:\s+(?=[a-z])|\s+et\s+(?=(?:je|j'|il|on|nous|tu|faut|faudrait|puis|ensuite|apres|aussi|demander|acheter|contacter|faire|trouver|monter|creer|preparer|reserver|enregistrer|envoyer|appeler|ecrire|lancer|organiser|commander|tester|souder|fabriquer|construire)\b)|\s+mais\s+|\s+puis\s+|\s+ensuite\s+|\s+donc\s+|\s+sinon\s+|\s*\(|\)/g;
   function clauses(text, ftext) {
     const out = [];
     for (const s of sentences(text)) {
@@ -162,18 +166,101 @@
       const price = /^\s*(?:la |le |l'|par |de l')?(?:piece|unite|billet|entree|place|personne|chacune?|ttc|ht|date|concert|prestation|seance|soiree|heure|jour|journee|semaine|soir|nuit|week-end|mois|cours|atelier|adhesion|cotisation|kit|exemplaire|location)\b/.test(after) || /\b(?:entree|place|billet|cotisation|adhesion|tarif|prix|abonnement|adherents?|membres?|places?|contreparties?)\s+(?:a|de|:)?\s*$/.test(pre22) || (/\s(?:a|à)\s*$/.test(pre22) && !(m[1] || '').trim() && !/budget|cout/.test(pre22)) || /\b(?:paie|paye|verse|rapporte|donne|recoit|facture|vend)\s+(?:[a-z'-]+\s+){0,2}$/.test(pre22);
       const ctx2 = ft.slice(Math.max(0, m.index - 90), m.index);
       const goal = /\b(objectif|obtenir|recolter|lever|gagner|atteindre|vendre pour|chiffre d'affaires|ca de|recette|benefice|faire)\s*:?\s*(?:de\s+|d')?(?:[a-z'-]+\s+){0,2}$/.test(ctx) || /^\s*(?:de|d')\s*(?:recette|ca\b|chiffre|benefice|marge|dons|subvention|financement)/.test(after) || /\b(subvention|demande de financement|dotation|mecenat|aide de|campagne|ulule|kisskiss|crowdfunding|financement participatif|cagnotte|collecte|collecter)\b[^.]*$/.test(ctx2) && !/budget|cout|depense|payer|acheter/.test(ctx);
-      out.push({ start: m.index, end: m.index + m[0].length, text: text.substr(m.index, m[0].length).trim().replace(/^budget\s+(?:de\s+)?/i, ''), value: v * mult, qual: m[1] || '', limit: /pas plus|max|moins de|jusqu'a|au plus/.test(m[1] || ''), goal: goal && !price, price });
+      // portée locale : la proposition qui contient le montant (bornée par . ; ! ? et les parenthèses)
+      const cS = Math.max(ft.lastIndexOf('.', m.index), ft.lastIndexOf(';', m.index), ft.lastIndexOf('!', m.index), ft.lastIndexOf('?', m.index), ft.lastIndexOf('(', m.index)) + 1;
+      let cE = ft.slice(m.index).search(/[.;!?)]/); cE = cE < 0 ? ft.length : m.index + cE;
+      const cl0 = ft.slice(cS, cE);
+      // dépense déjà faite : « j'ai investi 13000 € », « déjà dépensé 3000 € », « il y a un an j'ai acheté pour… »
+      const past = /\b(?:j'ai|on a|nous avons|avait|avais|deja|a ete)\s+(?:deja\s+)?(?:investi|depense|claque|mis|paye|achete|engage|place)s?\b|\b(?:deja|ont ete|a ete)\s+(?:investis?|depenses?|payes?)\b|\binvestissement (?:initial|de depart|deja fait)\b/.test(cl0) && !/\b(?:je vais|il faut|faudra|prevoir|a investir|a depenser)\b/.test(cl0);
+      // tarif : verbe de vente ou de location ET unité facturée dans la même proposition
+      const priceCl = /\b(?:vendre|vends|vend|louer|loue|facturer|facture|proposer|propose|tarif|tarifs|prix)\b/.test(cl0) && /\b(?:la |le |par |une |des |l')?(?:journee|journees|jour|demi-journee|heure|seance|prestation|titre|morceau|session|date|soiree|week-end|piece|unite|exemplaire|kit|mix|master)s?\b/.test(cl0) && !(m[1] || '').trim();
+      const isPrice = (price || priceCl) && !past;
+      // coût d'une pièce : « pompe à eau (25 euros) », « ventilateur : 20 € » dans une liste de matériel
+      let item = null;
+      const pm = /(?:^|[,;:()]|\bet\b)\s*([a-z][a-z' -]{2,40}?)\s*(?:\(\s*|:\s*)$/.exec(ft.slice(Math.max(0, m.index - 45), m.index));
+      if (pm && !(m[1] || '').trim() && !/\b(?:budget|total|prix|cout|tarif|objectif|environ)\b/.test(pm[1]) && !pm[1].split(/\s+/).some(w => toInf(w) && w.length > 3 && !/^(?:bac|eau|pompe)$/.test(w))) {
+        const st0 = m.index - (ft.slice(Math.max(0, m.index - 45), m.index).length - pm.index) + pm[0].indexOf(pm[1]);
+        item = clean(text.substr(st0, pm[1].length));
+      }
+      out.push({ start: m.index, end: m.index + m[0].length, text: text.substr(m.index, m[0].length).trim().replace(/^budget\s+(?:de\s+)?/i, ''), value: v * mult, qual: m[1] || '', limit: /pas plus|max|moins de|jusqu'a|au plus/.test(m[1] || ''), goal: goal && !isPrice && !past && !item, price: isPrice && !item, past, item });
     }
+    for (const x of out) if (!x.past && out.some(y => y.past && y.value === x.value)) { x.past = true; x.price = false; x.goal = false; }
     const re2 = /€\s?(\d+(?:[.,]\d+)?)/g;
     while ((m = re2.exec(ft))) out.push({ start: m.index, end: m.index + m[0].length, text: text.substr(m.index, m[0].length), value: parseFloat(m[1].replace(',', '.')), qual: '', limit: false });
     return out;
   }
-  const TECH_UNITS = { 'w': 'puissance', 'watts?': 'puissance', 'kw': 'puissance', 'v': 'tension', 'volts?': 'tension', 'a': 'courant', 'amperes?': 'courant', 'ma': 'courant', 'ohms?': 'impédance', 'kohms?': 'impédance', 'k': 'valeur', 'hz': 'fréquence', 'khz': 'fréquence', 'db': 'niveau', 'dbu': 'niveau', 'cm': 'dimension', 'mm': 'dimension', 'm2': 'surface', 'm²': 'surface', 'm3': 'volume', 'm³': 'volume', 'kg': 'masse', 'g': 'masse', 'l': 'volume', 'litres?': 'volume', 'btu': 'puissance frigorifique', '°c': 'température', 'degres': 'température', 'pouces?': 'dimension', 'mah': 'capacité', 'wh': 'énergie', 'kwh': 'énergie', 'tr/min': 'vitesse', 'rpm': 'vitesse', 'bpm': 'tempo', 'ms': 'temps', 'secondes?': 'temps', 'ah': 'capacité', 'min': 'durée', 'minutes?': 'durée', 'heures?': 'durée', 'h': 'durée' };
+  const TECH_UNITS = { 'w': 'puissance', 'watts?': 'puissance', 'kw': 'puissance', 'v': 'tension', 'volts?': 'tension', 'a': 'courant', 'amperes?': 'courant', 'ma': 'courant', 'ohms?': 'impédance', 'kohms?': 'impédance', 'k': 'valeur', 'hz': 'fréquence', 'khz': 'fréquence', 'db': 'niveau', 'dbu': 'niveau', 'cm': 'dimension', 'mm': 'dimension', 'm2': 'surface', 'm²': 'surface', 'm3': 'volume', 'm³': 'volume', 'kg': 'masse', 'g': 'masse', 'l': 'volume', 'litres?': 'volume', 'btu': 'puissance frigorifique', '°c': 'température', 'degres?': 'température', '°': 'température', 'pouces?': 'dimension', 'mah': 'capacité', 'wh': 'énergie', 'kwh': 'énergie', 'tr/min': 'vitesse', 'rpm': 'vitesse', 'bpm': 'tempo', 'ms': 'temps', 'secondes?': 'temps', 'ah': 'capacité', 'min': 'durée', 'minutes?': 'durée', 'heures?': 'durée', 'h': 'durée' };
   function findSpecs(text, ft) {
     const out = []; const keys = Object.keys(TECH_UNITS).sort((a, b) => b.length - a.length).join('|');
     const re = new RegExp(`\\b(\\d+(?:[.,]\\d+)?)\\s?(${keys})(?![a-z])`, 'g'); let m;
     while ((m = re.exec(ft))) { const unit = Object.keys(TECH_UNITS).find(k => new RegExp(`^(?:${k})$`).test(m[2])); out.push({ start: m.index, end: m.index + m[0].length, text: text.substr(m.index, m[0].length), value: parseFloat(m[1].replace(',', '.')), kind: TECH_UNITS[unit] }); }
     return out;
+  }
+  /* =========================================================
+     Coûts du projet : pièces chiffrées, statut payé / à payer, total, budget annoncé
+     ========================================================= */
+  const PAID_RE = /\b(?:j'ai\s+(?:deja\s+)?(?:achete|paye|regle|commande|pris|investi|depense|recupere|reserve)|on\s+a\s+(?:deja\s+)?(?:achete|paye|regle|commande|reserve)|nous\s+avons\s+(?:deja\s+)?(?:achete|paye|regle|commande)|deja\s+(?:achetee?s?|payee?s?|reglee?s?|commandee?s?|investie?s?|depensee?s?|pris|acquise?s?|en ma possession)|(?:achetee?s?|payee?s?|reglee?s?|commandee?s?)\s+(?:deja|hier|la semaine derniere|le mois dernier))\b/g;
+  const TODO_RE = /\b(?:il\s+(?:me\s+|nous\s+)?(?:faut|faudra|faudrait|manque|reste)|me\s+manque|nous\s+manque|reste\s+a\s+(?:acheter|payer|commander|regler|financer|prevoir)|a\s+(?:acheter|payer|commander|prevoir|regler)|encore|prevue?s?|prevoir|besoin\s+d|depenses?)\b/g;
+  const fmtEur = v => (Math.round(v * 100) / 100).toString().replace('.', ',') + ' €';
+  function findCosts(text, ft, money, sents) {
+    // marqueurs de statut, avec leur portée : un marqueur placé juste APRÈS un montant ne vaut que pour lui
+    const marks = [];
+    for (const [re, st] of [[PAID_RE, 'paye'], [TODO_RE, 'a_payer']]) { re.lastIndex = 0; let m; while ((m = re.exec(ft))) marks.push({ at: m.index, end: m.index + m[0].length, st }); }
+    const postfixOf = mo => marks.find(k => k.at >= mo.end && k.at - mo.end <= 3 && !/[,;.]/.test(ft.slice(mo.end, k.at)));
+    const bound = new Set(money.map(postfixOf).filter(Boolean));
+    let budget = null; const pieces = [];
+    for (const mo of money) {
+      const sen = sents.find(s => mo.start >= s.start && mo.start <= s.end) || { start: 0, end: ft.length };
+      const pre = ft.slice(Math.max(sen.start, mo.start - 40), mo.start);
+      const cl0 = ft.slice(Math.max(sen.start, Math.max(ft.lastIndexOf(',', mo.start), ft.lastIndexOf(';', mo.start), ft.lastIndexOf(':', mo.start)) + 1), mo.start);
+      // budget annoncé (enveloppe, plafond) : pas une pièce
+      if (mo.limit || /\bbudget\b/.test(fold(mo.qual || '')) || /\b(?:budget|enveloppe|plafond)(?:\s+(?:total|global|maxi(?:mum)?|max|de|prevu))*\s*:?\s*(?:de\s+)?$/.test(pre)) { if (budget === null) budget = mo.value; continue; }
+      if (mo.goal) continue;
+      // tarif de vente, entrée, billet : une recette, pas un coût
+      const sentF = ft.slice(sen.start, sen.end);
+      if (mo.price && (/\b(?:entree|place|billet|adhesion|cotisation|tarif|prix|abonnement)s?\s*(?:a|de|:)?\s*$/.test(pre) || /\b(?:contreparties?|recompenses?|paliers?|ulule|kisskiss|crowdfunding|precommandes?)\b/.test(sentF) || /\b(?:vends?|vendre|louer|loue|facturer?|propose)\b/.test(cl0 + ' ' + sentF.slice(0, Math.max(0, mo.start - sen.start)).split(/[,;]/).pop()))) continue;
+      // nom de la pièce : le groupe nominal juste avant (« le boîtier à », « jacks ( »), sinon juste après (« 12 € le boîtier »)
+      const seg = ft.slice(sen.start, mo.start);
+      const cut = Math.max(seg.lastIndexOf(','), seg.lastIndexOf(';'), seg.lastIndexOf(':'), seg.lastIndexOf(')'), (() => { const r = /\s(?:et|puis|plus)\s/g; let x, l = -1; while ((x = r.exec(seg))) l = x.index + x[0].length - 1; return l; })());
+      let s0 = sen.start + cut + 1; let raw = ft.slice(s0, mo.start);
+      raw = raw.replace(/\s*(?:\(|:|\ba\b|\bpour\b|\bde\b|\bdu\b|\bau\b|\ben\b)\s*$/, '').replace(/\s+$/, '');
+      const words = raw.split(/\s+/).filter(Boolean); const keep = [];
+      for (let i = words.length - 1; i >= 0 && keep.length < 6; i--) {
+        const w = words[i].replace(/^(?:j'|l'|d'|m'|qu')/, '');
+        if (!keep.length && /^(?:coute|coutent|coutera|couteront|vaut|valent|revient|reviennent|me|nous|est|sont|fait|font|a|environ)$/.test(words[i])) continue;   // « le studio coûte 400 € »
+        if (/^(?:coute|coutent|coutera|vaut|valent|revient|reviennent|me|nous|deja|achete|achetee?s?|paye|payee?s?|regle|reglee?s?|commande|commandee?s?|faut|manque|reste|acheter|payer|regler|commander|prevoir|prevues?|encore|il|me|j'ai|ai|on|nous|avons|depenses?|pieces?|materiel|besoin|investi|pris|reserve)$/.test(words[i]) || (toInf(w) && !/^(?:cable|cables|jacks?|bois|filtre|transfo|son|pied|pieds|support|cachet)$/.test(w) && w.length > 3 && keep.length)) break;
+        keep.unshift(words[i]);
+      }
+      let hadDet = false; while (keep.length && /^(?:le|la|les|l'|un|une|des|du|de|mon|ma|mes|notre|nos|et)$/.test(keep[0])) { keep.shift(); hadDet = true; }
+      let name = keep.join(' '); let nStart = s0 + Math.max(0, raw.lastIndexOf(name));
+      if (!name || !/[a-z]{2}/.test(name) || (STOP.has(name) && !hadDet)) {
+        const af = /^\s*(?:les\s|le\s|la\s|l'|pour\s+(?:les\s|le\s|la\s|l'))\s*([a-z][a-z' -]{1,30}?)(?=\s*(?:[,;.)]|\set\s|$))/.exec(ft.slice(mo.end));
+        if (!af) continue; name = af[1]; nStart = mo.end + af[0].length - af[1].length;
+      }
+      if (name.split(' ').length > 6) continue;
+      // quantité : « 4 jacks à 1,50 € (pièce) » = 4 × 1,50 € ; « pour » = prix global
+      let value = mo.value;
+      const q = /^(\d+)\s/.exec(name); const conn = (/(\ba|\bpour)\s*$/.exec(ft.slice(Math.max(sen.start, mo.start - 6), mo.start)) || [])[1];
+      // tarif à l'unité (« 400 € la journée », « 150 € par titre ») : multiplié par la quantité citée dans la phrase (« 3 jours », « 4 titres »)
+      let detail = '';
+      const um = /^\s*(?:la |le |l'|par |de l'|du )(journee|jour|demi-journee|heure|seance|titre|morceau|morceaux|session|date|soir|nuit|semaine|mois|personne|musicien|exemplaire|piece|unite)s?\b/.exec(ft.slice(mo.end, mo.end + 24));
+      if (um) {
+        const unit = um[1].replace(/^jour$/, 'journee').replace(/^morceaux$/, 'morceau');
+        const alts = { journee: 'jours?|journees?', heure: 'heures?|h', seance: 'seances?', titre: 'titres?|morceaux', morceau: 'morceaux|titres?', session: 'sessions?', date: 'dates?|concerts?', soir: 'soirs?|soirees?', nuit: 'nuits?', semaine: 'semaines?', mois: 'mois', personne: 'personnes?', musicien: 'musiciens?', exemplaire: 'exemplaires?', piece: 'pieces?', unite: 'unites?', 'demi-journee': 'demi-journees?' }[unit];
+        const qm = alts && new RegExp('\\b(\\d+|' + NUM_WORD_RE + ')\\s+(?:' + alts + ')\\b').exec(ft.slice(sen.start, sen.end));
+        if (qm) { const n = parseNum(qm[1]); if (n > 1) { value = n * mo.value; detail = fmtEur(mo.value) + ' × ' + n; } }
+      }
+      if (q && +q[1] > 1 && (conn === 'a' || /^\s*(?:la |l')?(?:piece|unite|chacune?)\b/.test(ft.slice(mo.end, mo.end + 12)))) value = +q[1] * mo.value;
+      // statut : marqueur collé après le montant, sinon le dernier marqueur libre avant dans la phrase
+      const post = postfixOf(mo);
+      const prev = marks.filter(k => !bound.has(k) && k.end <= mo.start && k.at >= sen.start).sort((x, y) => y.at - x.at)[0];
+      const statut = post ? post.st : prev ? prev.st : 'a_payer';
+      pieces.push({ nom: clean(text.substr(nStart, name.length)), montant: Math.round(value * 100) / 100, statut, detail, start: mo.start, end: mo.end });
+    }
+    if (pieces.length < 2) return null;
+    const sum = st => Math.round(pieces.filter(p => !st || p.statut === st).reduce((t, p) => t + p.montant, 0) * 100) / 100;
+    const total = sum();
+    return { pieces, deja: sum('paye'), reste: sum('a_payer'), total, budget, ecart: budget === null ? null : Math.round((budget - total) * 100) / 100 };
   }
   // Cibles chiffrées (« 200 abonnés », « une centaine de personnes », « 3 concerts »)
   const TARGET_NOUNS = 'demi-journees?|journees?|locations?|reservations?|mails?|e-mails?|candidatures?|prestations?|soirees?|kits?|exemplaires?|abonnes?|auditeurs?|ecoutes?|streams?|vues?|likes?|followers?|fans?|ventes?|vendus?|exemplaires?|cd|vinyles?|disques?|copies|clients?|commandes?|inscrits?|inscriptions?|participants?|personnes?|spectateurs?|entrees?|billets?|places?|adherents?|membres?|benevoles?|eleves?|enfants?|jeunes|familles?|visiteurs?|dates?|concerts?|representations?|seances?|ateliers?|episodes?|titres?|morceaux?|chansons?|clips?|videos?|articles?|produits?|pieces?|unites?|prototypes?|pedales?|amplis?|exemplaires|partenaires?|sponsors?|mecenes?|groupes?|artistes?|projets?|dossiers?|heures?|jours?|semaines?|mois|pourcents?|%|euros? de (?:ca|chiffre d.affaires|benefice|recette|marge)|chiffre d.affaires|ca\\b';
@@ -201,6 +288,8 @@
   const ER_VERBS = 'constituer completer justifier prouver attester actualiser corriger numeroter compiler recolter quantifier lister recenser schematiser cabler router piloter declencher heberger signer contractualiser assurer tarifer tester ramener amener emmener apporter rapporter preter changer reprendre caler bosser kiffer graver presser tirer rassembler bloquer liberer reveiller remonter acheminer livrer convoquer rembourser nommer deleguer recompenser juger selectionner auditionner heberger charger decharger ranger animer evaluer informer prevenir solder budgetiser mutualiser fabriquer realiser ameliorer modifier adapter recycler coder automatiser regler partager postuler candidater telecharger accompagner aider booker chiffrer clarifier collaborer consulter creuser debuter demenager depanner diagnostiquer dupliquer economiser elargir emprunter enseigner equilibrer exposer fideliser filtrer gagner illustrer importer exporter informer integrer lister mobiliser moderniser monetiser nettoyer orienter parrainer planter positionner pitcher prospecter recenser reconditionner relier remplacer rentabiliser reprogrammer retravailler reviser sauver scanner sonder sponsoriser stabiliser surveiller synchroniser tracer transformer trier utiliser visser blinder dessouder ressouder bobiner cartographier acheter appeler ajouter ajuster aller amenager animer annoncer annuler apporter assembler assurer budgeter brancher bricoler calculer calibrer caler chercher chiffrer cibler cabler collecter coller commander communiquer comparer composer compter concretiser confirmer contacter controler coordonner copier creer customiser cuisiner deballer decider decouper declarer decorer definir delimiter demander demarcher demarrer deplacer deposer designer dessiner developper diffuser distribuer documenter donner doser echanger editer embaucher emprunter encaisser engager enregistrer ensemencer entrainer envoyer equiper essayer estimer etudier evaluer facturer fixer filmer finaliser financer former fraiser gerer graver imaginer imprimer installer interviewer inviter isoler jouer lancer livrer localiser louer maquetter marquer masteriser mesurer mixer modeliser monter motiver negocier noter numeriser optimiser organiser packager participer payer peaufiner percer peser photographier piloter planifier poncer poser poster pratiquer preparer presenter preter prevoir programmer projeter promouvoir proposer prototyper publier rassembler rechercher recruter recuperer rediger relancer reparer repeter reserver rencontrer renseigner renover repertorier restaurer retoucher rejoindre rester reunir sampler sauvegarder scier securiser sensibiliser signer simuler solliciter souder souscrire sonoriser sourcer structurer stocker tailler tester tirer tourner transporter travailler trouver valider vendre verifier visiter voter'.split(/\s+/);
   const IRREG = {
     faire: 'fais fait faisons faites font fasse fasses fassent ferai feras fera ferons'.split(' '),
+    revendre: 'revends revend revendons revendent revende revendrai revendra'.split(' '),
+    vendre: 'vends vend vendons vendent vende vendrai vendra'.split(' '),
     prendre: 'prends prend prenons prennent prenne prendrai prendra'.split(' '),
     mettre: 'mets met mettons mettent mette mettrai mettra'.split(' '),
     ecrire: 'ecris ecrit ecrivons ecrivent ecrive ecrirai ecrira'.split(' '),
@@ -273,32 +362,14 @@
      6. Lexiques
      ========================================================= */
   const STOP = new Set("a au aux avec ce ces cet cette c'est dans de des du elle en et eux il ils je j' la le les leur lui ma mais me mes moi mon ne nos notre nous on ou par pas pour qu que qui sa se ses son sur ta te tes toi ton tu un une vos votre vous y d' l' n' s' m' t' qu' est sont suis etre avoir ai as a avons ont fait faire faut faudrait il-y bien tres plus moins aussi comme si ca cela ceci tout tous toute toutes rien chose choses truc trucs genre peu peut-etre peut etre deja encore puis alors donc car parce quand dont ici la-bas avant apres pendant depuis entre vers chez sans sous idee envie besoin veux voudrais aimerais pense crois sais dois vais va vont serait sera c'etait cest jai mettre petit petite gros grosse grand grande bon bonne".split(' '));
-  const VAGUE = [['peut-être', 'peut[- ]etre'], ['genre', "genre(?! de| d'|s)"], ['un peu', "un peu(?! de| d')"], ['quelque chose', 'quelque chose'], ['un truc', 'un truc|des trucs'], ['machin', 'machin'], ['plus ou moins', 'plus ou moins'], ['éventuellement', 'eventuellement'], ['à voir', 'a voir|on verra'], ['si possible', 'si possible'], ['sûrement', 'surement|probablement'], ['quelques', 'quelques'], ['plusieurs', 'plusieurs'], ['pas mal', 'pas mal'], ['bientôt', 'bientot'], ['un jour', 'un jour(?! de| ou)'], ['à un moment', 'a un moment'], ['vite fait', 'vite fait'], ['en gros', 'en gros'], ['etc.', 'etc'], ['pourquoi pas', 'pourquoi pas'], ['sympa', 'sympa']];
-  const AUDIENCE = 'lyceens|collegiens|apprentis|stagiaires|public|gens|personnes|jeunes|ados|adolescents|enfants|familles|parents|seniors|retraites|habitants|riverains|adherents|membres|benevoles|musiciens|artistes|groupes|eleves|etudiants|clients|abonnes|auditeurs|spectateurs|fans|amateurs|debutants|pros|professionnels|guitaristes|bassistes|chanteurs|batteurs|techniciens|partenaires|ecoles|structures|associations|entreprises|commercants|quartier|ville|mairie|collectivites|programmateurs|salles|labels|medias|journalistes|touristes|scolaires|centre social|maisons de quartier|ehpad|hopitaux|personnes agees|personnes handicapees';
-  const ROLES = 'ville|fondation|inge son|ingenieur du son|technicien|regisseur|graphiste|monteur|monteuse|videaste|photographe|mixeur|masteriseur|producteur|realisateur|beatmaker|musicien|batteur|bassiste|guitariste|chanteur|chanteuse|choriste|comptable|tresorier|tresoriere|president|presidente|secretaire|bureau|conseil d\'administration|benevoles?|mecene|sponsor|partenaire|banque|banquier|mairie|prefecture|region|departement|drac|sacem|cnm|adami|spedidam|urssaf|guso|pole emploi|france travail|imprimeur|fournisseur|distributeur|label|tourneur|attache de presse|programmateur|luthier|electronicien|electricien|frigoriste|soudeur|menuisier|artisan|fablab|ami|amie|pote|frere|soeur|cousin|cousine|pere|mere|copain|copine|collegue|associe|associee';
-  const EQUIP = 'qu-?\\d+|x32|m32|sq-?\\d|dlive|platines|cdj|micro|micros|interface|carte son|console|table de mixage|enceintes?|retours?|ampli|amplis|amplificateur|guitare|basse|batterie|clavier|synthe|synthetiseur|pedales?|pedalier|cables?|casque|ordinateur|ordi|pc|mac|logiciel|daw|ableton|cubase|reaper|pro tools|logic|plugin|camera|appareil photo|eclairage|projecteurs?|lumieres?|sono|sonorisation|scene|vehicule|camion|voiture|remorque|local|salle|studio|atelier|garage|imprimante 3d|imprimante|fer a souder|station de soudage|oscilloscope|multimetre|generateur|alimentation de labo|perceuse|visseuse|scie|ponceuse|defonceuse|etabli|etau|tour|fraiseuse|laser|cnc|arduino|raspberry|esp32|breadboard|site internet|site web|compte bancaire|stock|outils?|materiel';
-  const COMPONENTS = 'resistances?|condensateurs?|transistors?|diodes?|leds?|potentiometres?|potars?|footswitch|footswitchs|interrupteurs?|switchs?|jacks?|boitiers?|boitier|pcb|circuit imprime|plaque d\'essai|veroboard|stripboard|ampli op|aop|op-amp|ne5532|tl072|jrc4558|lm386|lampes?|tubes?|12ax7|el34|el84|6l6|transfos?|transformateurs?|self|redresseur|regulateur|compresseurs?|ventilateurs?|ventilo|echangeur|evaporateur|condenseur|radiateur|dissipateur|peltier|module peltier|tuyaux?|cuivre|fluide|gaz|r290|r32|r410a|thermostat|capteurs?|sondes?|moteurs?|relais|fusibles?|cordon secteur|prise|batterie lithium|accu|cellules|bms|haut-parleurs?|hp|baffle|caisson|bois|contreplaque|mdf|alu|aluminium|acier|tole|vis|colle|peinture|vernis|tissu|grille';
 
   /* =========================================================
      7. Domaines
      ========================================================= */
-  const DOMAINS = {
-    musique: { label: 'Musique', kw: { 'booker': 3, 'booking': 3, 'programmateurs': 3, 'dossier de presse': 3, 'dates de concert': 3, 'trio': 2, 'quartet': 2, 'solo': 1, 'enregistre': 2, 'pressage': 3, 'presser': 3, 'album': 3, 'ep': 3, 'single': 3, 'morceau': 3, 'morceaux': 3, 'titre': 1, 'chanson': 3, 'chansons': 3, 'compo': 3, 'composer': 3, 'composition': 3, 'enregistrer': 2, 'enregistrement': 3, 'studio': 2, 'mixage': 3, 'mixer': 2, 'mastering': 3, 'master': 1, 'maquette': 2, 'demo': 2, 'clip': 3, 'groupe': 2, 'repet': 2, 'repetition': 2, 'concert': 2, 'tournee': 3, 'live': 1, 'spotify': 3, 'deezer': 3, 'bandcamp': 3, 'streaming': 3, 'distribution': 1, 'vinyle': 3, 'cd': 2, 'sacem': 2, 'musique': 2, 'musical': 2, 'podcast': 3, 'beat': 2, 'prod': 1, 'chanteur': 1, 'guitare': 1, 'basse': 1, 'batterie': 1, 'jazz': 2, 'rock': 2, 'folk': 2, 'rap': 2, 'electro': 2, 'arrangement': 2, 'paroles': 3, 'texte': 1, 'label': 1, 'sortie': 1, 'playlist': 3, 'radio': 2, 'son': 1, 'sound': 1 } },
-    asso: { label: 'Association', kw: { 'association': 3, 'asso': 3, 'tlm103': 3, 'bureau': 2, 'ca': 1, "conseil d'administration": 3, 'ag': 2, 'assemblee generale': 3, 'statuts': 3, 'adherent': 3, 'adherents': 3, 'adhesion': 3, 'cotisation': 3, 'subvention': 3, 'subventions': 3, 'dossier': 2, 'prefecture': 3, 'mairie': 2, 'benevole': 3, 'benevoles': 3, 'mecenat': 3, 'mecene': 3, 'rescrit': 3, 'recu fiscal': 3, 'cerfa': 3, 'tresorerie': 2, 'tresorier': 3, 'president': 2, 'loi 1901': 3, 'compte rendu': 2, 'demarche': 2, 'demarches': 2, 'administratif': 2, 'licence': 2, 'guso': 3, 'convention': 2, 'partenariat': 2 } },
-    achat: { label: 'Achat de matériel', kw: { 'acheter': 3, 'achat': 3, 'commander': 2, 'commande': 1, 'investir': 2, 'investissement': 2, 'occasion': 3, 'neuf': 2, 'leboncoin': 3, 'thomann': 3, 'woodbrass': 3, 'amazon': 2, 'magasin': 2, 'prix': 2, 'modele': 2, 'marque': 2, 'comparer': 3, 'budget': 1, 'louer': 2, 'location': 2, 'devis': 2, 'remplacer': 2, 'upgrade': 3, 'equiper': 3, "s'equiper": 3, 'materiel': 2 } },
-    evenement: { label: 'Événement', kw: { 'anniversaire': 2, 'ans de': 2, 'celebrer': 3, 'inauguration': 3, 'soiree concert': 3, 'festival': 3, 'soiree': 3, 'evenement': 3, 'event': 3, 'concert': 2, 'spectacle': 3, 'scene': 1, 'programmation': 3, 'programmer': 2, 'billetterie': 3, 'billets': 3, 'entree': 2, 'jauge': 3, 'salle': 2, 'lieu': 2, 'buvette': 3, 'catering': 3, 'artistes': 2, 'plateau': 2, 'affiche': 2, 'communication': 1, 'flyer': 2, 'technique': 1, 'sono': 2, 'lumiere': 2, 'regie': 2, 'securite': 2, 'benevoles': 1, 'date': 1, 'organiser': 3, 'fete': 2, 'bal': 2, 'vernissage': 3, 'apero': 2, 'scene ouverte': 3, 'jam': 3, 'open mic': 3, 'tremplin': 3 } },
-    culturel: { label: 'Action culturelle', kw: { 'faire decouvrir': 3, 'decouvrir': 2, 'metier': 2, 'metiers': 2, 'lyceens': 3, 'collegiens': 3, 'eleves': 2, 'bac pro': 3, 'apprentis': 2, 'immersion': 3, 'mise en situation': 2, 'ados': 2, 'adolescents': 2, 'jeunes': 1, 'enfants': 1, 'habitants': 2, 'creation sonore': 3, 'restitution': 3, 'seances': 2, 'ateliers de': 3, 'atelier': 3, 'ateliers': 3, 'action culturelle': 3, 'mediation': 3, 'eac': 3, 'education artistique': 3, 'ecole': 2, 'ecoles': 2, 'college': 2, 'lycee': 2, 'scolaire': 3, 'scolaires': 3, 'residence': 3, 'intervention': 3, 'quartier': 2, 'centre social': 3, 'ehpad': 3, 'public': 1, 'publics': 2, 'sensibiliser': 3, 'sensibilisation': 3, 'transmission': 3, 'pedagogique': 3, 'drac': 3, 'appel a projets': 3, 'politique de la ville': 3, 'inclusion': 2, 'participatif': 3, 'exposition': 2, 'rencontre': 2, 'conference': 2, 'patrimoine': 3, 'decouverte': 2, 'initiation': 3 } },
-    business: { label: 'Business', kw: { 'offre': 2, 'location de': 2, 'journee': 1, 'contrat de location': 3, 'assurer le materiel': 2, 'page web': 1, 'business': 3, 'entreprise': 3, 'societe': 2, 'micro-entreprise': 3, 'auto-entrepreneur': 3, 'auto entrepreneur': 3, 'siret': 3, 'statut': 2, 'clients': 3, 'client': 3, 'vendre': 3, 'vente': 3, 'ventes': 3, 'chiffre d\'affaires': 3, 'ca': 1, 'marge': 3, 'rentable': 3, 'rentabilite': 3, 'benefice': 3, 'tarif': 3, 'tarifs': 3, 'prix de vente': 3, 'devis': 2, 'facture': 3, 'facturer': 3, 'urssaf': 3, 'tva': 3, 'marche': 2, 'concurrence': 3, 'concurrents': 3, 'boutique': 3, 'e-commerce': 3, 'site de vente': 3, 'etsy': 3, 'commercialiser': 3, 'lancer ma': 2, 'lancer mon': 2, 'service': 1, 'prestation': 2, 'prestations': 2, 'investisseur': 3, 'pret': 2, 'banque': 2, 'business plan': 3, 'freelance': 3 } },
-    formation: { label: 'Formation', kw: { 'former': 3, 'formation': 3, 'apprendre': 3, 'cours': 2, 'tuto': 2, 'tutos': 2, 'tutoriel': 2, 'certification': 3, 'diplome': 2, 'progresser': 3, 'maitriser': 3, 'pratiquer': 2, 'entrainer': 2, 'exercices': 2, 'methode': 1, 'stage': 2, 'masterclass': 3 } },
-    fabrication: { label: 'Fabrication', kw: { 'fabriquer': 3, 'fabrication': 3, 'construire': 3, 'construction': 2, 'diy': 3, 'bricoler': 3, 'bricolage': 3, 'prototype': 3, 'souder': 3, 'soudure': 3, 'circuit': 3, 'schema': 3, 'pcb': 3, 'composants': 3, 'electronique': 3, 'pedale': 3, 'pedales': 3, 'overdrive': 3, 'fuzz': 3, 'distortion': 3, 'delay': 2, 'reverb': 2, 'ampli': 2, 'amplificateur': 3, 'lampes': 2, 'lampe': 1, 'enceinte': 2, 'baffle': 3, 'climatiseur': 3, 'clim': 3, 'compresseur': 2, 'peltier': 3, 'refroidir': 2, 'ventilateur': 2, 'boitier': 3, 'imprimante 3d': 3, 'impression 3d': 3, 'modelisation': 3, 'cnc': 3, 'arduino': 3, 'esp32': 3, 'raspberry': 3, 'capteur': 2, 'moteur': 2, 'menuiserie': 3, 'bois': 1, 'atelier': 1, 'plans': 2, 'kit': 2, 'monter': 1, 'transfo': 3, 'alimentation': 2, 'tension': 2, 'watts': 2, 'luthier': 3, 'lutherie': 3 } }
-  };
 
   /* Bases de connaissances par domaine -------------------------------------------- */
   // Étapes de méthode : ajoutées seulement si tes propres actions ne les couvrent pas déjà
-  const MAKE_OBJ = 'ampli|amplificateur|preampli|pedale|pedalboard|enceinte|baffle|caisson|synthe|synthetiseur|boite a rythmes|flight case|meuble|etagere|table|lampe|boitier|cable|cables|micro|guitare|basse|instrument|controleur|sequenceur|clim|climatiseur|ventilateur|radiateur|robot|drone|machine';
-  const TECH_GEAR = 'carte son|interface|console|table de mixage|ampli|micro|enceinte|ordinateur|ordi|logiciel|pedale|cable|synthe|clavier|guitare|basse|batterie|casque|plugin|qu-?\\d|camera|projecteur';
   const PRIVATE = c => c.has('potes|amis|copains|entre nous|privee?|anniversaire|jardin de|chez (?:moi|mon|ma|nous)|en famille|fete de famille') && !c.has('billet|billetterie|entree payante|affiche|public|jauge de \\d{3}');
-  const VEHICLE = 'camion|camionnette|voiture|vehicule|utilitaire|van|fourgon|remorque|scooter';
   const PLAN = {
     musique: [
       { t: 'Fixer la liste des titres et le format de sortie (single, EP, album)', kw: 'liste|titres|format|tracklist', l: 'Liste des titres arrêtée' },
@@ -356,6 +427,7 @@
       { t: 'Interroger 10 clients potentiels', kw: 'interroger|sonder|questionnaire|clients|enquete|marche', l: 'Retours de 10 personnes' },
       { t: 'Calculer le prix de revient et le prix de vente', kw: 'prix|tarif|marge|cout|chiffrer|calculer', l: 'Grille de prix avec marge' },
       { t: 'Choisir le statut et vérifier tes obligations', kw: 'statut|micro|siret|urssaf|declar|immatricul', l: 'Statut choisi' },
+      { t: 'Choisir un fournisseur ou un imprimeur et commander des échantillons', kw: 'fournisseur|imprim|echantillon|atelier', l: 'Échantillons validés', when: c => c.has('t-?shirts?|tee-?shirts?|textile|merch|merchandising|goodies|stickers|autocollants|affiches|tote|casquettes?|sweats?|mugs?|badges?|produits derives') },
       { t: 'Préparer un premier lot ou une offre test', kw: 'lot|test|premier|prototype|stock', l: 'Offre test prête' },
       { t: 'Vendre aux premiers clients et mesurer', kw: 'vendre|vente|commercialiser|lancer', l: 'Premières ventes' }
     ],
@@ -425,13 +497,16 @@
       R('Obligations administratives et fiscales mal anticipées', 'moyenne', 'moyenne', 'interne', 'Déclarations ou cotisations non prévues', 'Vérifier statut, déclarations, assurance avant la première vente', () => true),
       R('Compatibilité avec ta situation actuelle (statut, revenus, temps)', 'moyenne', 'moyenne', 'interne', 'Conflit d’horaires ou effet sur tes droits actuels', 'Te renseigner auprès des organismes concernés avant de démarrer', () => true),
       R('Trésorerie insuffisante au démarrage', 'moyenne', 'moyenne', 'interne', 'Stock ou dépenses à avancer avant les premières ventes', 'Démarrer petit, faire payer un acompte', c => c.has('stock|fabriqu|achat|investi|materiel|local')),
+      R('Stock invendu (tailles, coloris, quantités minimales de commande)', 'moyenne', 'élevée', 'interne', 'Cartons restants trois mois après la commande', 'Petite série ou impression à la demande, précommandes avant de commander', c => c.has('t-?shirts?|tee-?shirts?|textile|merch|merchandising|goodies|stickers|autocollants|tote|casquettes?|sweats?|mugs?|badges?|produits derives|stock')),
       R('Concurrence déjà bien installée', 'moyenne', 'moyenne', 'externe', 'Offres équivalentes moins chères', 'Identifier ce qui te distingue avant de lancer', () => true)
     ],
     fabrication: [
-      R('Risque électrique (tension secteur ou haute tension)', 'élevée', 'moyenne', 'interne', 'Intervention sur un circuit branché ou des condensateurs chargés', 'Travailler hors tension, décharger les condensateurs, protections (fusible, terre, isolation)', c => c.has('secteur|230 ?v|220 ?v|haute tension|lampes?|tubes?|transfos?|transformateur|el34|el84|6l6|12ax7|climatiseur|clim|compresseur|frigo|pompe a chaleur|decoupage|smps|alim(?:entation)? (?:secteur|integree|interne)|classe? d\\b|[1-9]\\d{2,} ?w\\b')),
-      R('Manipulation de fluide frigorigène réglementée', 'élevée', 'élevée', 'interne', 'Besoin de charger ou d’ouvrir un circuit de gaz', 'Utiliser un groupe déjà chargé et scellé, ou faire intervenir un professionnel certifié', c => c.has('climatiseur|clim|frigo|refriger|pompe a chaleur|compresseur|gaz|r290|r32|r410|fluide')),
+      R('Risque électrique (tension secteur ou haute tension)', 'élevée', 'moyenne', 'interne', 'Intervention sur un circuit branché ou des condensateurs chargés', 'Travailler hors tension, décharger les condensateurs, protections (fusible, terre, isolation)', c => (c.has('climatiseur|clim') && !c.has('(?:5|9|12|24) ?v\\b|usb|batterie|pile')) || c.has('secteur|230 ?v|220 ?v|haute tension|lampes?|tubes?|transfos?|transformateur|el34|el84|6l6|12ax7|compresseur|frigo|pompe a chaleur|decoupage|smps|alim(?:entation)? (?:secteur|integree|interne)|classe? d\\b|[1-9]\\d{2,} ?w\\b')),
+      R('Manipulation de fluide frigorigène réglementée', 'élevée', 'élevée', 'interne', 'Besoin de charger ou d’ouvrir un circuit de gaz', 'Utiliser un groupe déjà chargé et scellé, ou faire intervenir un professionnel certifié', c => c.has('frigo|refriger|pompe a chaleur|compresseur|gaz|r290|r32|r410|fluide frigorigene|frigorigene') || (c.has('climatiseur|clim') && !c.has('evapora|alveol|pompe a eau|bac d.eau|eau|brumis|adiabat'))),
+      R('Efficacité dépendante de l’humidité de l’air (refroidissement par évaporation)', 'élevée', 'moyenne', 'externe', 'Gain de température faible les jours humides', 'Mesurer température et humidité avant et après, tester par temps sec et humide', c => c.has('evapora|alveol|pompe a eau|bac d.eau|brumis|adiabat') && !c.has('compresseur|frigo|gaz|r290|r32')),
+      R('Eau stagnante : hygiène et fuites', 'moyenne', 'moyenne', 'interne', 'Odeur, dépôt ou goutte sous l’appareil', 'Vider et nettoyer le bac chaque semaine, bac étanche, éloigner l’électronique de l’eau', c => c.has('pompe a eau|bac d.eau|reservoir|eau')),
       R('Performances en dessous du cahier des charges', 'moyenne', 'moyenne', 'interne', 'Mesures du prototype éloignées des objectifs', 'Valider sur prototype avant de finaliser', () => true),
-      R('Échauffement et dissipation thermique', 'élevée', 'moyenne', 'interne', 'Composants trop chauds après 30 minutes de fonctionnement', 'Dimensionner dissipateurs et ventilation, mesurer la température', c => c.has('ampli|amplificateur|clim|climatiseur|peltier|moteur|lampes?|tubes?|compresseur|radiateur') || (c.has('\\d+ ?w\\b|watts?|puissance') && !c.has('enceinte|haut-parleur|\\bhp\\b|baffle'))),
+      R('Échauffement et dissipation thermique', 'élevée', 'moyenne', 'interne', 'Composants trop chauds après 30 minutes de fonctionnement', 'Dimensionner dissipateurs et ventilation, mesurer la température', c => (c.has('clim|climatiseur') && !c.has('evapora|alveol|pompe a eau|bac d.eau')) || c.has('ampli|amplificateur|peltier|moteur|lampes?|tubes?|compresseur|radiateur') || (c.has('\\d+ ?w\\b|watts?|puissance') && !c.has('enceinte|haut-parleur|\\bhp\\b|baffle'))),
       R('Bruit, souffle ou ronflette', 'moyenne', 'élevée', 'interne', 'Buzz ou souffle audible au repos', 'Plan de masse soigné, câbles blindés, alimentation filtrée', c => c.has('pedale|overdrive|fuzz|distortion|ampli|preampli|audio|micro|guitare|synthe|sequenceur|midi')),
       R('Alimentation inversée ou inadaptée qui détruit le circuit', 'moyenne', 'moyenne', 'interne', 'Composant qui chauffe dès la mise sous tension', 'Diode de protection, vérifier polarité et tension avant branchement', c => c.has('pedale|9 ?v|alimentation|arduino|esp32|led|batterie')),
       R('Pièces introuvables ou délais de livraison longs', 'moyenne', 'moyenne', 'externe', 'Rupture ou délai supérieur à trois semaines', 'Commander tôt, identifier des équivalents', () => true),
@@ -460,6 +535,7 @@
     { t: 'Écrire l’intention et le découpage du clip (plans, durée, lieux)', kw: 'ecrire|scenario|decoupage|storyboard|idee', l: 'Découpage écrit' },
     { t: 'Constituer l’équipe (réalisation, image, montage)', kw: 'videaste|realisat|equipe|cadreur|monteur', l: 'Équipe confirmée' },
     { t: 'Faire les repérages et obtenir les autorisations de tournage', kw: 'autorisation|reperage|lieu|tram|demander', l: 'Autorisations écrites' },
+    { t: 'Trouver les comédiens (casting) et faire signer les autorisations', kw: 'casting|comedien|acteur|actrice|figurant', l: 'Distribution confirmée, autorisations signées', when: c => c.has('femme|homme|personnage|comedien|acteur|actrice|enfant|gamine?|fille|garcon|histoire|scenario|role') },
     { t: 'Établir le plan de tournage (date, horaires, matériel, figurants)', kw: 'plan de tournage|planning|figurants|horaires', l: 'Feuille de service' },
     { t: 'Tourner', kw: 'tourn|tournage|filmer', l: 'Rushes sauvegardés en double' },
     { t: 'Monter, étalonner, caler le son définitif', kw: 'montage|monter|etalonn|mixage', l: 'Clip exporté' },
@@ -469,6 +545,7 @@
     R('Autorisation de tournage refusée ou tardive (lieu public, transport, commerce)', 'élevée', 'moyenne', 'externe', 'Pas de réponse écrite trois semaines avant le tournage', 'Demander tôt, par écrit, avec dates et équipe ; prévoir un lieu de repli', () => true),
     R('Droit à l’image des personnes filmées', 'moyenne', 'moyenne', 'interne', 'Personnes reconnaissables sans accord', 'Faire signer une autorisation aux figurants, éviter les visages non consentis', c => c.has('tram|rue|public|figurant|gens|passants|ville')),
     R('Météo ou lumière défavorable le jour du tournage', 'moyenne', 'moyenne', 'externe', 'Prévisions défavorables à J-3', 'Date de repli, plans intérieurs prévus', c => c.has('exterieur|dehors|rue|tram|plein air|ville|parc')),
+    R('Mineur à l’image : autorisation des parents et règles du travail des enfants', 'élevée', 'moyenne', 'externe', 'Enfant prévu au tournage sans accord écrit des parents', 'Autorisation parentale écrite ; pour un tournage rémunéré, se renseigner sur l’autorisation préalable (travail des enfants dans le spectacle)', c => c.has('enfant|gamine?|petite fille|petit garcon|mineur|bebe|ado\\b|adolescent|quand (?:elle|il) etait petite?')),
     R('Tournage plus long que prévu, montage repoussé', 'moyenne', 'élevée', 'interne', 'Plans prévus non tournés en fin de journée', 'Découpage précis, plans prioritaires tournés en premier', () => true),
     R('Sortie sans promotion : peu de vues', 'élevée', 'moyenne', 'interne', 'Aucun relais prévu à J-15', 'Préparer miniature, relais presse et réseaux avant la sortie', () => true)
   ];
@@ -575,6 +652,9 @@
     if (/\bdes ans\b|\b\d+ ans d/.test(ft) || /^(?:.*\b)?organiser\b/.test(firstF)) scores.evenement += 2;
     if (/\b(?:vendre|commercialiser|lancer (?:une|mon|ma|un) (?:offre|boutique|activite|entreprise|marque|business|service))\b/.test(firstF) && !/\b(cd|vinyles?|album|ep|disques?)\b/.test(firstF)) scores.business += 6;
     if (/\b(?:vendre|commercialiser|facturer)\b/.test(ft) && /\b(kits?|produits?|fait main|faits main|prestations?|service|boutique|clients?)\b/.test(ft) && !/\b(cd|vinyles?|album|ep|disques?)\b/.test(ft)) scores.business += 5;
+    // vendre ou louer SES services, SON matériel, à un tarif : activité rémunérée
+    if (/\b(?:proposer|vendre|louer|facturer)\s+(?:mes|mon|ma|nos|notre)\s+(?:services?|prestations?|kit|materiel|savoir-faire|competences?|studio|sono)\b/.test(ft)) scores.business += 5;
+    if (findMoney(text, ft).some(x => x.price) && /\b(?:louer|vendre|facturer)\b/.test(ft) && !/\b(cd|vinyles?|album|ep|disques?|billets?|entrees?)\b/.test(ft)) scores.business += 3;
     const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
     const domain = ranked[0][1] >= 3 ? ranked[0][0] : 'general';
     const domain2 = ranked[1] && ranked[1][1] >= 4 && ranked[1][1] >= ranked[0][1] * 0.6 ? ranked[1][0] : null;
@@ -585,6 +665,9 @@
     const dates = findDates(text, ft, today);
     const durations = findDurations(ft, text);
     const money = findMoney(text, ft);
+    const couts = findCosts(text, ft, money, sentences(text));
+    if (couts) for (const p of couts.pieces) { const mo = money.find(x => x.start === p.start); if (mo) { mo.item = p.nom; mo.price = false; mo.goal = false; mo.past = p.statut === 'paye'; mo.piece = true; } }
+    else for (const mo of money) mo.item = null;
     const specs = findSpecs(text, ft).filter(s => !money.some(m => s.start >= m.start && s.start < m.end) && !dates.some(d => s.start >= d.start && s.start < d.end));
     const targets = findTargets(text, ft, money).filter(t => !dates.some(d => t.start >= d.start && t.start < d.end) && !durations.some(d => t.start >= d.start && t.start < d.end));
 
@@ -592,9 +675,12 @@
     const people = [];
     let m; const orgs = [];
     const preO = /\b(?:[Dd]emander à|[Dd]emande à|[Aa]vec|[Cc]ontacter|[Aa]ppeler|[Éé]crire à|[Vv]oir avec|[Aa]ide de|[Mm]on pote|[Mm]a pote|[Mm]on ami|[Mm]on amie|[Mm]on frère|[Mm]a sœur|[Mm]on cousin|[Mm]a cousine|[Mm]on associé|[Mm]on collègue|[Mm]a collègue|[Pp]roposer à|[Ee]nvoyer à|[Rr]elancer|[Pp]ar|[Mm]ixage par|[Mm]ix par|[Mm]ixé par|[Mm]ontage par|[Aa]vec l'aide de)\s+((?:[A-ZÉÈÀÂÎÔÛÇ][\wéèêàâîôûç'’-]+)(?:\s+[A-ZÉÈÀÂÎÔÛÇ][\wéèêàâîôûç'’-]+)?)/g;
-    const NOT_PEOPLE = /^(Je|Il|On|Le|La|Les|Un|Une|Pour|Avec|Et|Mais|Spotify|Deezer|Youtube|YouTube|Bandcamp|Instagram|Facebook|Tiktok|TikTok|Amazon|Thomann|Leboncoin|Angers|Paris|Nantes|Tours|Lyon|Mairie|Région|Drac|DRAC|Sacem|SACEM|Urssaf|URSSAF|Arduino|Qu|Noël)$/;
+    const NOT_PEOPLE = new RegExp('^(?:' + NON_PERSONNES.join('|') + ')$');
     while ((m = preO.exec(text))) { const name = m[1].replace(/[’']$/, ''); if (!NOT_PEOPLE.test(name.split(' ')[0])) people.push({ name, start: m.index, end: m.index + m[0].length, ctx: m[0] }); }
     const W2 = 0;
+    { const lowRe = /\b(?:demander a|demande a|voir avec|appeler|contacter|avec l'aide de|proposer a)\s+([a-z][a-z'-]{2,14})(?=\s*(?:[,.;!?]|\s+et\b|\s+pour\b|\s+si\b|$))/g; let lm;
+      while ((lm = lowRe.exec(ft))) { const w = lm[1]; if (STOP.has(w) || toInf(w) || /^(?:mairie|region|banque|asso|association|label|lui|eux|elle|elles|quelqu'un|personne|tous|chacun|maman|papa)$/.test(w) || new RegExp('^(?:' + ROLES + '|' + EQUIP + ')$').test(w)) continue;
+        people.push({ name: w[0].toUpperCase() + w.slice(1), start: lm.index, end: lm.index + lm[0].length, ctx: clean(text.substr(lm.index, lm[0].length - w.length)) }); } }
     const W = "[A-ZÉÈ][^\\s,;:()]*"; const orgRe = new RegExp(`\\b(?:via|chez|aupres de|auprès de|avec l'aide de|par l'intermediaire de)\\s+((?:(?:la |le |l'|les )?${W}(?:\\s+${W})*)(?:\\s*(?:,|et)\\s*(?:la |le |l'|les )?${W}(?:\\s+${W})*)*)`, 'g');
     while ((m = orgRe.exec(text))) m[1].split(/\s*(?:,|\bet\b)\s*/).map(x => trimEnd(x.trim()).replace(/^(?:la |le |l'|les )/i, '')).filter(x => x && !NOT_PEOPLE.test(x)).forEach(x => orgs.push(x));
     const subjRe = /(?:^|[.,;:!?]\s*|\bet\s+)([A-ZÉÈ][a-zéèêàç'-]{2,})\s+(fait|fera|s'occupe|s’occupe|gere|gère|va|peut|pourrait|m'aide|m’aide|doit|assure|prend|joue|mixe|enregistre|filme|monte|dessine|ecrit|écrit|chante|compose|accepte|est d'accord|est partant|est partante)\b([^.,;]*)/g;
@@ -607,15 +693,24 @@
     const roleRe = new RegExp('\\b(?:un |une |le |la |mon |ma |des |les |l\')?(' + ROLES + ')\\b', 'g');
     const roles = []; while ((m = roleRe.exec(ft))) roles.push({ role: text.substr(m.index + m[0].length - m[1].length, m[1].length), start: m.index, end: m.index + m[0].length });
     const equipRe = new RegExp('\\b(?:un |une |le |la |les |des |mon |ma |mes |du |de la |d\')?(' + EQUIP + ')(?![\\w-])', 'g');
-    const equip = []; while ((m = equipRe.exec(ft))) equip.push({ item: text.substr(m.index + m[0].length - m[1].length, m[1].length), f: m[1], start: m.index, end: m.index + m[0].length });
-    const BUY = /\b(acheter|achat|commander|louer|location|trouver|investir|il (?:me )?faut|faudrait|besoin d|remplacer|changer de|s'equiper)\b/;
+    const equip = [];
+    // matériel nommé précisément (lexique GEAR) d'abord : l'expression longue couvre les mots courts qu'elle contient
+    for (const [pat, label] of GEAR) {
+      const gre = new RegExp('\\b(?:un |une |le |la |les |des |mon |ma |mes |du |de la |d\'|\\d+ |deux |trois |quatre |six |huit |douze )?(' + pat + ')(?![\\w-])', 'g');
+      while ((m = gre.exec(ft))) { const st = m.index + m[0].length - m[1].length; if (/\b(?:lampes?|tubes?|etages?|sections?|circuits?|modules?|cartes?|pcb|schemas?)\s+(?:de\s+|du\s+|d')$/.test(ft.slice(Math.max(0, st - 20), st))) continue;
+        if (!equip.some(e => st < e.gEnd && st + m[1].length > e.gStart)) equip.push({ item: label, f: fold(label), start: m.index, end: m.index + m[0].length, gStart: st, gEnd: st + m[1].length, gear: true }); }
+    }
+    while ((m = equipRe.exec(ft))) { const st = m.index + m[0].length - m[1].length; if (m[1] === 'materiel' && /^\s*:/.test(ft.slice(m.index + m[0].length, m.index + m[0].length + 3))) continue; if (/^(?:local|tour|stock)$/.test(m[1]) && m[0] === m[1] && !/\b(?:au|du|le|un|ce|notre|mon|son|leur|ton|votre|en|dans|a|pour|vers)\s+$/.test(ft.slice(Math.max(0, st - 12), st))) continue; /* « marché local » : adjectif */ if (equip.some(e => e.gear && st < e.gEnd && st + m[1].length > e.gStart)) continue; equip.push({ item: text.substr(st, m[1].length), f: m[1], start: m.index, end: m.index + m[0].length }); }
+    equip.sort((x, y) => x.start - y.start);
+    const BUY = /\b(acheter|achat|commander|louer|location|trouver|investir|il (?:me )?faut|faudrait|besoin d|(?:il |me )manque|reste a acheter|remplacer|changer de|s'equiper)\b/;
     const OWN = /\b(j'ai|on a|nous avons|je possede|j'ai deja|deja|mon|ma|mes|notre|nos|dispose)\b/;
     for (let k = equip.length - 1; k >= 0; k--) if (/(?:entrees?|sorties?|prises?|canaux|voies)\s+(?:de\s+|d')?$/.test(ft.slice(Math.max(0, equip[k].start - 12), equip[k].start + (equip[k].end - equip[k].start - equip[k].f.length)))) equip.splice(k, 1);
     for (const e of equip) {
       const sn = sentences(text).find(x => e.start >= x.start && e.start <= x.end) || { start: 0, text: '' };
       const sf = fold(sn.text); const before = sf.slice(0, Math.max(0, e.start - sn.start) + 1);
       const isPlace = /^(studio|home studio|local|salle|atelier|garage)$/.test(e.f);
-      e.kind = BUY.test(before) ? 'besoin' : isPlace ? 'lieu' : OWN.test(before) ? 'possede' : BUY.test(sf) ? 'besoin' : 'cite';
+      const cl0 = (cl.find(c => e.start >= c.start && e.start <= c.end) || { f: '' }).f;
+      e.kind = /\b(?:revendre|revends?|revende|vendre|vends|ceder|me separer de|me debarrasser de)\b/.test(cl0) ? 'cede' : BUY.test(before) ? 'besoin' : isPlace ? 'lieu' : OWN.test(before) ? 'possede' : BUY.test(sf) ? 'besoin' : 'cite';
     }
     const compRe = new RegExp('\\b(' + COMPONENTS + ')\\b', 'g');
     const comps = []; while ((m = compRe.exec(ft))) comps.push(text.substr(m.index, m[1].length));
@@ -623,11 +718,18 @@
     // actions citées et objectif
     // Une proposition porte une action si un verbe d'action suit un « déclencheur » (il faut, je dois, je vais…)
     // ou si elle commence directement par un verbe (style télégraphique : « acheter un micro »).
-    const MODAL = /\b(?:il\s+(?:me\s+)?(?:faut|faudrait|faudra)|faut|faudrait|faudra|je\s+dois|on\s+doit|nous\s+devons|je\s+devrais|on\s+devrait|je\s+vais|on\s+va|nous\s+allons|je\s+veux|je\s+voudrais|j'aimerais|j'aimerai|je\s+souhaite|je\s+compte|je\s+pense|je\s+prevois|j'ai\s+envie\s+de|l'idee\s+(?:c'est|serait)\s+de|ce\s+serait\s+bien\s+de|ca\s+serait\s+bien\s+de|ce\s+serait\s+cool\s+de|il\s+serait\s+bien\s+de|mon\s+objectif\s+(?:c'est|est)\s+de|on\s+pourrait|je\s+pourrais|penser\s+a|ne\s+pas\s+oublier\s+de|n'oublie\s+pas\s+de|idee\s*:|projet\s*:|a\s+faire\s*:)\s*(?:que\s+(?:je|j'|on|nous|tu)\s*|qu'(?:on|il|elle)\s*)?(?:(?:d'abord|aussi|encore|vite|absolument|surtout|ensuite|juste|deja|bien|vraiment|peut-etre|enfin|egalement|rapidement|bientot)\s+)*(?:de\s+|d')?(?:(?:d'abord|aussi|encore|vite|absolument|surtout|ensuite|juste|deja|bien|vraiment|peut-etre|enfin|egalement|rapidement|bientot)\s+)*(?:(?:me|se|te|nous)\s+|m'|s'|t')?/g;
+    const MODAL = /\b(?:il\s+(?:me\s+)?(?:faut|faudrait|faudra)|faut|faudrait|faudra|je\s+dois|on\s+doit|nous\s+devons|je\s+devrais|on\s+devrait|je\s+vais|on\s+va|nous\s+allons|je\s+veux|je\s+voudrais|j'aimerais|j'aimerai|je\s+souhaite|je\s+pensais|je\s+comptais|j'avais\s+pense\s+a|j'ai\s+besoin\s+de|on\s+a\s+besoin\s+de|nous\s+avons\s+besoin\s+de|je\s+compte|je\s+pense|je\s+prevois|j'ai\s+envie\s+de|l'idee\s+(?:c'est|serait)\s+de|ce\s+serait\s+bien\s+de|ca\s+serait\s+bien\s+de|ce\s+serait\s+cool\s+de|il\s+serait\s+bien\s+de|mon\s+objectif\s+(?:c'est|est)\s+de|on\s+pourrait|je\s+pourrais|penser\s+a|ne\s+pas\s+oublier\s+de|n'oublie\s+pas\s+de|idee\s*:|projet\s*:|a\s+faire\s*:)\s*(?:que\s+(?:je|j'|on|nous|tu)\s*|qu'(?:on|il|elle)\s*)?(?:(?:d'abord|aussi|encore|vite|absolument|surtout|ensuite|juste|deja|bien|vraiment|peut-etre|enfin|egalement|rapidement|bientot)\s+)*(?:de\s+|d')?(?:(?:d'abord|aussi|encore|vite|absolument|surtout|ensuite|juste|deja|bien|vraiment|peut-etre|enfin|egalement|rapidement|bientot)\s+)*(?:(?:me|se|te|nous)\s+|m'|s'|t')?/g;
     const LEAD = /^(?:(?:et|puis|ensuite|aussi|apres|d'abord|enfin|egalement|sinon|ou|alors|donc|surtout)(?![a-z'])\s*|(?:idee|projet)\s*:\s*|[-*]\s*|\d+[.)]\s*)*(?:(?:me|se)\s+|m'|s')?/;
     const SKIP_SOLO = new Set(['aller', 'faire', 'voir', 'tenir', 'venir', 'rester', 'donner', 'poser', 'mettre', 'aider', 'pouvoir']);
     const actions = []; let objective = null;
     const verbAt = (f, i, orig) => { const mm = /^([a-z'-]+)/.exec(f.slice(i)); if (!mm) return null; if (orig && /[éÉ]e?s?$/.test(orig.slice(i, i + mm[1].length))) return null; const w = mm[1].replace(/^(?:j'|l'|d'|m'|t'|s')/, ''); const inf = toInf(w); return inf ? { inf, w: mm[1], i, len: mm[1].length } : null; };
+    // Verbe à l'infinitif, ou participe en -é écrit à la place de l'infinitif (« posé des tarifs », « démarché les salles »)
+    const infOrPart = w => { const x = w.replace(/^(?:j'|l'|d'|m'|t'|s')/, ''); if (ALL_VERBS.has(x)) return x; if (/e$/.test(x) && ALL_VERBS.has(x.slice(0, -1) + 'er')) return x.slice(0, -1) + 'er'; return null; };
+    const DET = "(?:des|les|le|la|l'|un|une|mes|mon|ma|nos|notre|ses|son|sa|du|ce|cette|ces|au|aux|leur|leurs|tes|ton|ta|votre|vos)";
+    // Découpe d'une proposition en actions coordonnées : « faire valoir X de poser Y et de toucher Z »
+    const coordCuts = f => { const out = []; const re = new RegExp("(?:\\s+et\\s+(?:de\\s+|d')?|\\s+(?:de|d')\\s*)([a-z'-]+)(?=\\s+" + DET + "\\b)", 'g'); let mm; while ((mm = re.exec(f))) { const inf = infOrPart(mm[1]) || (/^[a-z]{3,}(?:er|ir)$/.test(mm[1]) && !STOP.has(mm[1]) ? mm[1] : null); if (inf && !/^(etre|avoir)$/.test(inf)) out.push({ at: mm.index, vAt: mm.index + mm[0].length - mm[1].length, inf, w: mm[1] }); } return out; };
+    let listSentence = null;   // phrase où une liste d'actions a commencé après un déclencheur
+    const extra = [];
     for (const c of cl) {
       if (/\bje\s+me\s+demande\b|\bse\s+demander\b/.test(c.f)) continue;   // réflexion, pas une action
       let hit = null, modal = false;
@@ -636,15 +738,32 @@
         let p = mm.index + mm[0].length; let v = verbAt(c.f, p, c.text);
         if (!v) { const sub = /^que\s+(?:[a-z0-9'-]+\s+){1,2}?(?=[a-z])/.exec(c.f.slice(p)) || /^(?:[a-z0-9'-]+\s+)(?=[a-z])/.exec(c.f.slice(p)); if (sub) { const q = p + sub[0].length; const v2 = verbAt(c.f, q, c.text); if (v2 && !/^(un|une|le|la|les|des|du)$/.test(c.f.slice(p, q).trim())) v = v2; } }
         if (v) { hit = v; modal = true; break; } if (mm[0].length === 0) MODAL.lastIndex++; }
-      if (!hit) { const lead = LEAD.exec(c.f)[0].length; if (!/^pour\b/.test(c.f.slice(lead))) hit = verbAt(c.f, lead, c.text); }
+      if (!hit) {
+        const lead = LEAD.exec(c.f)[0].length;
+        if (!/^pour\b/.test(c.f.slice(lead))) {
+          hit = verbAt(c.f, lead, c.text);
+          const w0 = (/^([a-z'-]+)/.exec(c.f.slice(lead)) || [])[1] || '';
+          // suite d'une liste ouverte par « il faut », « je dois »… : le participe vaut infinitif
+          if (!hit && listSentence === c.sentence && w0 && infOrPart(w0)) hit = { inf: infOrPart(w0), w: w0, i: lead, len: w0.length };
+          // style télégraphique : seulement un infinitif (« répond à une clientèle » décrit, il n'ordonne pas)
+          else if (hit && !modal && listSentence !== c.sentence && hit.w.replace(/^(?:j'|l'|d'|m'|t'|s')/, '') !== hit.inf && !/^(?:me|se|m'|s')/.test(c.f.slice(LEAD.exec(c.f)[0].length - 3, lead))) hit = null;
+        }
+      }
       if (!hit) continue;
+      if (modal) listSentence = c.sentence;
       // « faire valider », « faire faire » : on garde l'auxiliaire et le verbe suivant
       let restStart = hit.i + hit.len;
       let rest = c.text.slice(restStart).trim();
       if (/^(?:que|qu'|ca|cela)\b/.test(fold(rest)) && hit.inf === 'faire') continue;
       if (/^(?:un|une)\s+(?:idee|projet)\b/.test(fold(rest))) continue;
       if (SKIP_SOLO.has(hit.inf) && rest.split(' ').length < 2) continue;
-      const main = rest.replace(/\s+(?:pour|afin de|afin d'|parce que|car|histoire de)\s.*$/i, '');
+      let main = rest.replace(/\s+(?:pour|afin de|afin d'|parce que|car|histoire de)\s.*$/i, '');
+      // actions coordonnées dans la même proposition : chacune devient une action
+      const cuts = coordCuts(fold(main));
+      if (cuts.length && (modal || listSentence === c.sentence)) {
+        cuts.forEach((k, j) => { const seg = main.slice(k.vAt + k.w.length, j + 1 < cuts.length ? cuts[j + 1].at : main.length).trim(); if (seg) extra.push({ text: MAXW(clean(cap(infDisplay(k.inf)) + ' ' + seg), 14), inf: k.inf, start: c.start + 1, clause: c, modal: true, rest: seg, refl: false }); });
+        main = main.slice(0, cuts[0].at);
+      }
       const phrase = clean(cap(infDisplay(hit.inf)) + (main ? ' ' + main : ''));
       if (phrase.split(' ').length < 2) continue;
       const refl = /(?:^|\s)(?:me|se|m'|s')\s*$/.test(c.f.slice(0, hit.i)) && /^(former|entrainer|equiper|lancer|mettre|preparer|renseigner|inscrire|occuper|organiser|perfectionner|remettre)$/.test(hit.inf);
@@ -654,7 +773,23 @@
       if (!objective && PROJECT_VERBS.has(hit.inf) && (modal || actions.length === 0)) { objective = item; continue; }
       actions.push(item);
     }
+    actions.push(...extra);
+    // prénoms écrits en minuscules (« demander a hugo ») : majuscule dans les actions
+    for (const p of people) if (p.name && p.name[0] !== fold(p.name)[0]) { const re = new RegExp('\\b' + fold(p.name) + '\\b', 'g'); [...actions, objective].filter(Boolean).forEach(x => { x.text = x.text.replace(re, p.name); }); }
+    // objectif qui est une démarche (« faire la demande de subvention ») : il figure aussi dans les actions
+    if (objective && /\b(?:demande|dossier|declaration|inscription|candidature|prise en charge)\b/.test(fold(objective.rest)) && !actions.includes(objective)) actions.unshift(Object.assign({}, objective, { fromObjective: true }));
+    // objectif pris dans une liste de tâches (« je dois créer un site, faire…, contacter… ») : il reste aussi une action
+    if (objective && objective.modal && actions.filter(x => x.clause.sentence === objective.clause.sentence).length >= 2) actions.unshift(objective);
     if (!objective && actions.length) objective = actions.shift();
+
+    // pièces ou éléments à réunir, listés par l'auteur après « il faut » sans verbe (« il faut le bilan, les statuts… »)
+    const needs = []; let needSent = null;
+    for (const c of cl) {
+      const nm = /\b(?:il\s+(?:me\s+|nous\s+)?faut|faudra|faudrait|j'ai\s+besoin\s+d[ue']s?|on\s+a\s+besoin\s+d[ue']s?)\s+((?:(?:le|la|les|un|une|des|du|mon|ma|mes)\s|l').+)$/.exec(c.f);
+      if (nm && !toInf((nm[1].match(/^(?:(?:le|la|les|un|une|des|du|mon|ma|mes)\s|l')([a-z'-]+)/) || [])[1] || '')) { needs.push(clean(c.text.slice(c.f.length - nm[1].length))); needSent = c.sentence; continue; }
+      if (needSent === c.sentence && /^(?:et\s+)?(?:(?:le|la|les|un|une|des|du|mon|ma|mes)\s|l')[a-z]/.test(c.f) && !/^(?:c'est|ce)\b/.test(c.f)) needs.push(clean(c.text.replace(/^et\s+/i, '')));
+      else needSent = null;
+    }
 
     // motivation (pourquoi) et public (pour qui)
     let why = null, forWhom = null;
@@ -670,6 +805,7 @@
       if (mm3[1] === 'pour' && !/^(?:[a-z'-]+er|[a-z'-]+ir|[a-z'-]+re|que|qu'|se|s'|me|m'|le|la|les|l'|en|y|son|sa|ses|mon|ma|mes|notre|nos|leur|leurs|un|une|du)\b/.test(after) && !toInf(after.split(' ')[0])) continue;
       if (!why) why = clean(orig.replace(/^(?:l'objectif (?:c'est|est) de|le but (?:c'est|est) de)\s+/i, 'pour '));
     }
+    if (!forWhom) { const cb = /\b(?:cible|public vise|public|clientele|clients? vises?)\s*:\s*([^.;,]+)/.exec(ft); if (cb) forWhom = clean(text.substr(cb.index + cb[0].length - cb[1].length, cb[1].length)); }
     if (!forWhom) { const fw = new RegExp(`\\b(aupres d(?:es|e la|u|e l')|a destination d(?:es|e)|aux|a des|pour (?:les|des)|avec (?:les|des))\\s+((?:[a-z'-]+\\s+){0,2}(?:${AUDIENCE})\\b[^,.;]*)`).exec(ft); if (fw) forWhom = clean(text.substr(fw.index, fw[0].length)); }
 
     // contraintes
@@ -716,7 +852,7 @@
     let dom0 = domain, domB = domain2; const fd = objective && forceDomain(objective.inf); if (fd) { domB = domain !== fd ? domain : domB; dom0 = fd; }
     const sales = objective && /^(vendre|distribuer|diffuser|promouvoir|demarcher|commercialiser|ecouler)$/.test(objective.inf) && /^(musique|general)$/.test(dom0);
     const startDate = dates.find(d => d.kind === 'debut') || null;
-    return { startDate, text, ft, cl, has, spanOf, domain: dom0, domain2: domB, sales, podcast, scores, dates, durations, money, specs, targets, people: uniqBy(people, p => p.name), orgs: uniq(orgs), roles: uniqBy(roles, r => fold(r.role)), equip: uniqBy(equip, e => fold(e.item)), comps: uniq(comps.map(c => c.toLowerCase())), actions: uniqBy(actions, a => fold(a.text)), objective, why, forWhom, vagueIn, oppsRaw: opps, constraints: uniq(constraints), hypDit: uniq(hypDit), skills: uniq(skills), gaps: uniq(gaps), opps: uniq(opps.filter(o => !(objective && o.c === objective.clause) && !actions.some(x => x.clause === o.c)).map(o => o.t)), asked, vague, timeRes: uniq(timeRes), deadline, today };
+    return { startDate, text, ft, cl, has, spanOf, domain: dom0, domain2: domB, sales, podcast, scores, dates, durations, money, specs, targets, people: uniqBy(people, p => p.name), orgs: uniq(orgs), roles: uniqBy(roles, r => fold(r.role)), equip: uniqBy(equip, e => fold(e.item) + '|' + e.kind), equipAll: equip, comps: uniq(comps.map(c => c.toLowerCase())), actions: uniqBy(actions, a => fold(a.text)), needs, couts, objective, why, forWhom, vagueIn, oppsRaw: opps, constraints: uniq(constraints), hypDit: uniq(hypDit), skills: uniq(skills), gaps: uniq(gaps), opps: uniq(opps.filter(o => !(objective && o.c === objective.clause) && !actions.some(x => x.clause === o.c)).map(o => o.t)), asked, vague, timeRes: uniq(timeRes), deadline, today };
   }
   function infDisplay(inf) {
     const acc = { creer: 'créer', developper: 'développer', reserver: 'réserver', preparer: 'préparer', reparer: 'réparer', repeter: 'répéter', rediger: 'rédiger', decider: 'décider', definir: 'définir', deposer: 'déposer', declarer: 'déclarer', demarcher: 'démarcher', demarrer: 'démarrer', decouper: 'découper', deballer: 'déballer', decorer: 'décorer', delimiter: 'délimiter', deplacer: 'déplacer', ecrire: 'écrire', editer: 'éditer', echanger: 'échanger', etudier: 'étudier', evaluer: 'évaluer', equiper: 'équiper', gerer: 'gérer', negocier: 'négocier', reflechir: 'réfléchir', reunir: 'réunir', recuperer: 'récupérer', reduire: 'réduire', realiser: 'réaliser', recruter: 'recruter', renover: 'rénover', repertorier: 'répertorier', securiser: 'sécuriser', selectionner: 'sélectionner', verifier: 'vérifier', valider: 'valider', telecharger: 'télécharger', controler: 'contrôler', concretiser: 'concrétiser', repondre: 'répondre', batir: 'bâtir', cabler: 'câbler', prevoir: 'prévoir', preter: 'prêter', presenter: 'présenter', modeliser: 'modéliser', numeriser: 'numériser', interviewer: 'interviewer', decrire: 'décrire', ameliorer: 'améliorer', elaborer: 'élaborer', liberer: 'libérer', esperer: 'espérer', creuser: 'creuser', regler: 'régler', completer: 'compléter', repeindre: 'repeindre', depenser: 'dépenser', etablir: 'établir', echantillonner: 'échantillonner', designer: 'designer', interesser: 'intéresser', lancer: 'lancer' };
@@ -734,9 +870,26 @@
     const i2 = fc.findIndex(c => c === 'projet'); if (i2 >= 0) return cats[i2];
     const i3 = fc.findIndex(c => c === 'autre'); return i3 >= 0 ? cats[i3] : cats[0];
   }
+  /* Nature « problème à résoudre » : décision par votes sur tout le texte, pas par un mot isolé.
+     Symptômes concrets (panne, grésille, plante…) : +3 ; objectif de réparation : +4 ; « problème », « souci » : +1,
+     mais 0 quand la phrase dit que le projet RÈGLE un problème (« ça règle le problème de… » = argument, pas panne).
+     En face, les marques de projet : verbe d'objectif (vendre, créer, sortir…) +3, désir ou objectif affiché +2. */
+  const SYMPTOMS = /\b(?:panne|en panne|ne marche (?:pas|plus)|ne fonctionne (?:pas|plus)|bug(?:ue|gue)?|cass[ee]e?|fuit|fuite|ronfl|gresill|buzz|bourdonn|crach|crepit|grogn|siffl|bruit (?:parasite|de masse|de fond)|ne s'allume|plus de son|sature|larsen|hs\b|grille|claque|perd (?:la |le )?(?:connexion|liaison|signal|son)|perte de (?:connexion|signal)|se deconnecte|deconnexion|plante|freeze|se coupe|coupures?|instable)/g;
+  const VALUE_PROP = /\b(?:regle|regler|reglerait|resout|resoudre|resoudrait|repond(?:re)? a|repondrait a|solution (?:a|au|pour)|evite|eviter|corrige|corriger|pallier|pallie)\s+(?:a\s+)?(?:le|au|aux|les|un|des|ce|ces|leur|leurs)?\s*(?:gros\s+|vrai\s+)?(?:problemes?|soucis?)/;
+  function problemVotes(a) {
+    const f = a.ft; let problem = 0, project = 0;
+    if (a.objective && /^(reparer|depanner|diagnostiquer|resoudre)$/.test(a.objective.inf)) problem += 4;
+    problem += Math.min((f.match(SYMPTOMS) || []).length, 3) * 3;
+    if (/\b(?:d'ou vient|trouver (?:la|d'ou)|la cause|l'origine du)\b/.test(f)) problem += 2;
+    for (const c of a.cl) { if (/\b(?:problemes?|soucis?)\b/.test(c.f) && !VALUE_PROP.test(c.f)) problem += 1; }
+    if (a.objective && PROJECT_VERBS.has(a.objective.inf) && !/^(reparer|trouver|regler|depanner)$/.test(a.objective.inf)) project += 3;
+    if (/\b(?:je veux|j'aimerai|j'aimerais|je voudrais|je souhaite|objectif|il faudrait|il faut (?:enregistrer|sortir|organiser|creer|monter|fabriquer|lancer|vendre))\b/.test(f)) project += 2;
+    if (a.targets.length || a.money.some(m => m.goal || m.price)) project += 1;
+    return { problem: problem >= 3 && problem > project, score: problem, project };
+  }
   function natureOf(a) {
     const f = a.ft;
-    if ((a.objective && /^(reparer|depanner|diagnostiquer|resoudre)$/.test(a.objective.inf)) || /\b(?:probleme|panne|ne marche (?:pas|plus)|ne fonctionne (?:pas|plus)|bug|souci|cass[ee]|fuit|fuite|ronfl|gresill|buzz|bourdonn|crach|crepit|grogn|siffl|bruit parasite|ne s'allume|plus de son|sature|larsen|hs\b|grille|claque|perd (?:la |le )?(?:connexion|liaison|signal|son)|perte de (?:connexion|signal)|se deconnecte|deconnexion|plante|freeze|se coupe|coupures?|instable)/.test(f) && !/\b(?:je veux|j'aimerais|je voudrais|objectif|il faut (?:enregistrer|sortir|organiser|creer|monter|fabriquer))\b/.test(f.slice(0, 80))) return 'problème à résoudre';
+    if (problemVotes(a).problem) return 'problème à résoudre';
     if (/\b(ameliorer|optimiser|upgrade|modifier|moder|modding|perfectionner|mieux)\b/.test(f)) return 'amélioration';
     if (a.asked.length && a.asked.join(' ').length > f.length * 0.5) return 'question';
     if (/\b(je me demande|reflechir|je reflechis|pourquoi pas|et si)\b/.test(f) && !a.objective) return 'réflexion';
@@ -746,7 +899,7 @@
   }
   function titleOf(a) {
     if (a.objective) {
-      let rest = a.objective.rest.replace(/\s+(?:pour|afin de|afin d'|parce que|car|avant|d'ici|qui|avec un budget)\s.*$/i, '');
+      let rest = a.objective.rest.replace(/\s+(?:pour|afin de|afin d'|parce que|car|avant|d'ici|qui|avec un budget)\s.*$/i, '').replace(/\s*:.*$/, '');
       rest = rest.replace(/^(?:que\s+(?:je|j')\s*)/i, '');
       const t = clean((a.objective.refl ? (/^[aeiouyh]/.test(a.objective.inf) ? 'S\'' : 'Se ') + infDisplay(a.objective.inf) : cap(infDisplay(a.objective.inf))) + ' ' + rest);
       return MAXW(t, 9).replace(/[,;:]$/, '');
@@ -791,23 +944,30 @@
       const t = goalTargets[0] || bestSpec; const dur = a.durations.find(d => Math.abs(d.start - t.end) < 40);
       M = { etat: 'ok', extrait: clean(t.text + (dur ? ' ' + dur.text : '')), manque: '' };
       if (dom === 'fabrication' && !specOk && !(goalTargets.length && a.money.length)) M = { etat: 'partiel', extrait: M.extrait, manque: Q('M', qd) };
-    } else if (a.money.length) M = { etat: 'partiel', extrait: (a.money[0].price ? 'Prix ' : 'Budget ') + a.money[0].text, manque: Q('M', qd) };
+    } else if (a.money.length) { const m0 = a.money.find(x => !x.past) || a.money[0]; M = { etat: 'partiel', extrait: (m0.past ? 'Déjà investi ' : m0.price ? 'Prix ' : 'Budget ') + m0.text, manque: Q('M', qd) }; }
     else M = { etat: 'absent', extrait: '', manque: Q('M', qd) };
     // A
     const resources = [];
     const inObj = x => a.objective && x.start >= a.objective.clause.start && x.start <= a.objective.clause.end;
-    a.money.filter(x => x.price).forEach(x => { const mm = a.ft.slice(x.end, x.end + 14).match(/^\s*((?:la |le |l'|par )?[a-z]+)/); resources.push('Prix envisagé : ' + x.text + (mm ? ' ' + a.text.substr(x.end + mm[0].indexOf(mm[1]), mm[1].length) : '')); });
-    a.money.filter(x => !x.limit && !x.goal && !x.price).forEach(x => resources.push('Budget : ' + x.text.replace(/^(environ|autour de|a peu pres|à peu près)\s+/i, '≈ ')));
-    a.money.filter(x => x.limit).forEach(x => resources.push('Budget maximum : ' + x.text.replace(/^(pas plus de|maximum|max|moins de|jusqu'à|au plus)\s+/i, '')));
+    a.money.filter(x => x.price).forEach(x => { const mm = a.ft.slice(x.end, x.end + 24).match(/^\s*((?:la |le |l'|par |de l')?(?:piece|unite|billet|entree|place|personne|ttc|ht|date|concert|prestation|seance|soiree|heure|jour|journee|demi-journee|semaine|soir|nuit|week-end|mois|cours|atelier|adhesion|cotisation|kit|exemplaire|location|titre|morceau|session|mix|master)s?)\b/); resources.push('Prix envisagé : ' + x.text + (mm ? ' ' + a.text.substr(x.end + mm[0].indexOf(mm[1]), mm[1].length) : '')); });
+    if (a.couts) {
+      const C = a.couts, lst = st => C.pieces.filter(p => p.statut === st).map(p => p.nom + ' ' + fmtEur(p.montant) + (p.detail ? ' (' + p.detail + ')' : '')).join(', ');
+      if (C.deja) resources.push('Déjà payé : ' + lst('paye') + ' (' + fmtEur(C.deja) + ')');
+      if (C.reste) resources.push('À payer : ' + lst('a_payer') + ' (' + fmtEur(C.reste) + ')');
+      resources.push('Coût total du projet : ' + fmtEur(C.total) + (C.budget !== null ? (C.ecart >= 0 ? ' pour un budget de ' + fmtEur(C.budget) + ' (marge ' + fmtEur(C.ecart) + ')' : ' pour un budget de ' + fmtEur(C.budget) + ' (dépassement ' + fmtEur(-C.ecart) + ')') : ''));
+    }
+    uniqBy(a.money.filter(x => x.past && !x.piece), x => x.value).forEach(x => resources.push('Investissement déjà fait : ' + x.text));
+    a.money.filter(x => !x.limit && !x.goal && !x.price && !x.past && !x.piece && !(a.couts && a.couts.budget === x.value)).forEach(x => resources.push('Budget : ' + x.text.replace(/^(environ|autour de|a peu pres|à peu près)\s+/i, '≈ ')));
+    a.money.filter(x => x.limit && !(a.couts && a.couts.budget === x.value)).forEach(x => resources.push('Budget maximum : ' + x.text.replace(/^(pas plus de|maximum|max|moins de|jusqu'à|au plus)\s+/i, '')));
     a.people.forEach(p => resources.push(p.name + ' (' + clean(p.ctx.replace(p.name, '').trim()).toLowerCase() + ')'));
-    const INSTIT = /mairie|prefecture|region|departement|drac|sacem|cnm|adami|spedidam|urssaf|guso|pole emploi|france travail|banque|distributeur|label|programmateur|imprimeur|fournisseur/;
+    const INSTIT = /afdas|opco|uniformation|cpf|caf|cnc|mairie|prefecture|region|departement|drac|sacem|cnm|adami|spedidam|urssaf|guso|pole emploi|france travail|banque|distributeur|label|programmateur|imprimeur|fournisseur/;
     a.roles.forEach(r => { if (!a.people.some(p => a.spanOf(r.start, r.end).includes(p.name)) && !INSTIT.test(fold(r.role))) resources.push(cap(r.role)); });
-    const eqs = a.equip.filter(e => !(inObj(e) && e.kind !== 'possede') && !(e.f === 'materiel' && a.equip.length > 1));
-    eqs.filter(e => e.kind === 'possede').forEach(e => resources.push('Déjà là : ' + e.item));
-    eqs.filter(e => e.kind === 'lieu').forEach(e => resources.push('Lieu : ' + e.item));
-    eqs.filter(e => e.kind === 'besoin').forEach(e => resources.push('À acquérir : ' + e.item));
-    eqs.filter(e => e.kind === 'cite').forEach(e => resources.push('Matériel : ' + e.item));
+    const eqs = a.equipAll.filter(e => !(inObj(e) && e.kind !== 'possede') && !(e.f === 'materiel' && a.equip.length > 1));
+    // une ligne par catégorie : la liste reste lisible quand le matériel est nombreux
+    const grp = (k, lbl) => { const it = uniqBy(eqs.filter(e => e.kind === k), e => fold(e.item)).map(e => e.item); if (it.length) resources.push(lbl + it.join(', ')); };
+    grp('possede', 'Déjà là : '); grp('lieu', 'Lieu : '); grp('besoin', 'À acquérir : '); grp('cite', 'Matériel : ');
     a.timeRes.forEach(t => resources.push('Temps : ' + t));
+    a.specs.filter(s => s.kind === 'tension' && /\b(?:fonctionne|alimente|alimentation|sur|en)\s*$/.test(a.ft.slice(Math.max(0, s.start - 16), s.start))).slice(0, 1).forEach(s => resources.push('Alimentation : ' + s.text));
     const funders = a.roles.filter(r => /drac|region|departement|mairie|ville|cnm|adami|spedidam|sacem|fondation|mecene|sponsor/.test(fold(r.role))).map(r => r.role);
     if (funders.length && a.has('financ|subvention|soutenu|aide|dotation|mecenat')) resources.push('Financement visé : ' + uniq(funders).join(', '));
     const resU = uniqBy(resources, r => fold(r)).slice(0, 8);
@@ -815,7 +975,7 @@
     // R
     const Rr = a.why && a.forWhom ? { etat: 'ok', extrait: MAXW(fold(a.why).includes(fold(a.forWhom)) ? a.why : a.why + ' · ' + a.forWhom, 15), manque: '' } : a.why ? { etat: /^(achat|fabrication|asso|probleme)$/.test(qd) ? 'ok' : 'partiel', extrait: MAXW(a.why, 15), manque: /^(achat|fabrication|asso|probleme)$/.test(qd) ? '' : 'Pour qui exactement ?' } : a.forWhom ? { etat: 'partiel', extrait: MAXW(a.forWhom, 15), manque: 'Pourquoi c’est important ? ' } : { etat: 'absent', extrait: '', manque: Q('R', qd) };
     // T
-    const T = !a.deadline && a.startDate ? { etat: 'ok', extrait: a.startDate.text + ' (démarrage)', manque: '' } : a.deadline && a.deadline.kind !== 'duree' ? { etat: 'ok', extrait: a.deadline.text, manque: '' } : a.deadline ? { etat: 'partiel', extrait: a.deadline.text, manque: 'Fixer une date précise. ' + Q('T', qd) } : (/\b(bientot|un jour|rapidement|vite|asap|des que possible|plus tard)\b/.test(a.ft) ? { etat: 'partiel', extrait: (a.ft.match(/\b(bientot|un jour|rapidement|vite|asap|des que possible|plus tard)\b/) || [''])[0], manque: Q('T', qd) } : { etat: 'absent', extrait: '', manque: Q('T', qd) });
+    const T = !a.deadline && a.startDate ? { etat: 'ok', extrait: a.startDate.text + ' (démarrage)', manque: '' } : a.deadline && a.deadline.kind !== 'duree' ? { etat: 'ok', extrait: a.deadline.text, manque: '' } : a.deadline ? { etat: 'partiel', extrait: a.deadline.text, manque: 'Fixer une date précise. ' + Q('T', qd) } : (/\b(bientot|un jour(?!\s*,)|rapidement|vite|asap|des que possible|plus tard)\b/.test(a.ft) ? { etat: 'partiel', extrait: (a.ft.match(/\b(bientot|un jour(?!\s*,)|rapidement|vite|asap|des que possible|plus tard)\b/) || [''])[0], manque: Q('T', qd) } : { etat: 'absent', extrait: '', manque: Q('T', qd) });
 
     const whyTxt = a.why ? (a.deadline ? a.why.replace(a.deadline.text, '').trim() : a.why) : '';
     const why = whyTxt ? ' ' + trimEnd(whyTxt.replace(/^(car|parce que|parce qu')\s*/i, 'pour ').replace(/^Pour/, 'pour')) : '';
@@ -832,6 +992,7 @@
       echeance_date: a.deadline ? a.deadline.date : '',
       ressources: resU, contraintes: a.constraints.slice(0, 6), actions_citees: a.actions.map(x => x.text).slice(0, 8),
       domaine: DOMAINS[a.domain] ? DOMAINS[a.domain].label : 'Général', domaine2: a.domain2 ? DOMAINS[a.domain2].label : '',
+      couts: a.couts ? { pieces: a.couts.pieces.map(p => ({ nom: p.nom, montant: p.montant, statut: p.statut, detail: p.detail || '' })), deja: a.couts.deja, reste: a.couts.reste, total: a.couts.total, budget: a.couts.budget, ecart: a.couts.ecart } : null,
       questions_auteur: a.asked.slice(0, 5), mots_flous: a.vague, specs: a.specs.map(s => s.text), composants: a.comps.slice(0, 12),
       engine: 'local'
     };
@@ -859,11 +1020,12 @@
     const tpl = (isClip ? PLAN.clip : a.sales && dom !== 'probleme' ? PLAN.diffusion : dom === 'asso' && /assemblee generale|\bag\b/.test(objF) ? PLAN.ag : (PLAN[dom] || PLAN.general)).filter(s => !s.when || s.when(c));
     if (dom2 && PLAN[dom2] && dom2 !== dom && /^(asso|evenement)$/.test(dom2)) { const extra = PLAN[dom2].filter(s => !s.when || s.when(c)).filter(s => /declar|valid|autoris|compatib|cahier/.test(fold(s.t))); extra.slice(0, 1).forEach(s => tpl.splice(Math.min(2, tpl.length), 0, s)); }
     const livOf = x => { if (x.inf === 'faire') { const v2 = toInf((fold(x.rest).match(/^([a-z'-]+)/) || [])[1] || ''); if (v2 && VERB_LIVRABLE[v2]) return VERB_LIVRABLE[v2]; } return VERB_LIVRABLE[x.inf] || 'Fait et vérifié'; };
-    const userActs = a.actions.map(x => ({ etape: x.text, livrable: livOf(x), source: 'dit', inf: x.inf === 'faire' ? (toInf((fold(x.rest).match(/^([a-z'-]+)/) || [])[1] || '') || 'faire') : x.inf, f: fold(x.text) }));
+    const userActs = a.actions.map(x => ({ fromObjective: x.fromObjective, etape: x.text, livrable: livOf(x), source: 'dit', inf: x.inf === 'faire' ? (toInf((fold(x.rest).match(/^([a-z'-]+)/) || [])[1] || '') || 'faire') : x.inf, f: fold(x.text) }));
     const reOf = s => new RegExp('\\b(?:' + s.kw + ')');
     const slot = new Map(); // index de phase -> actions de l'auteur
     const loose = [];
     for (const u of userActs) {
+      if (u.fromObjective) { loose.push(u); continue; }   // l'objectif ne remplace pas une étape de méthode
       let i = tpl.findIndex(s => reOf(s).test(u.inf));
       if (i < 0) i = tpl.findIndex(s => reOf(s).test(u.f));
       if (i < 0) { loose.push(u); continue; }
@@ -875,6 +1037,12 @@
     // première étape faisable sous 48 h : on remonte une prise de contact si elle existe
     const quick = steps.findIndex(s => s.source === 'dit' && /^(demander|contacter|appeler|ecrire|envoyer|relancer|reserver|chercher|comparer|lister)$/.test(s.inf || ''));
     if (quick > 0) steps.unshift(steps.splice(quick, 1)[0]);
+    // étapes déjà faites d'après le texte : « le mix est fini » → enregistrement et mixage faits
+    const doneMix = /\b(?:mix|mixage)\s+(?:est\s+|sont\s+)?(?:deja\s+)?(?:fini|finis|termine|fait|boucle|pret)\b/.test(a.ft);
+    const doneRec = doneMix || /\b(?:enregistrement|prises?|maquettes?)\s+(?:est\s+|sont\s+)?(?:deja\s+)?(?:fini|finie?s?|termine(?:e?s)?|faite?s?|boucle(?:e?s)?)\b/.test(a.ft);
+    for (let k = steps.length - 1; k >= 0; k--) { const t = fold(steps[k].etape); if (steps[k].source !== 'methode') continue;
+      if ((doneRec && /maquette|enregistrer les prises|reserver le studio|home studio/.test(t)) || (doneMix && /^faire mixer$/.test(t)) || (/\bsingle\b/.test(a.ft) && /liste des titres/.test(t))) steps.splice(k, 1); }
+    if (a.needs.length) { const k = steps.findIndex(s => s.source === 'methode' && /^Rassembler/.test(s.etape)); const txt = 'Rassembler : ' + a.needs.join(', '); if (k >= 0) steps[k] = { etape: txt, livrable: steps[k].livrable, source: 'dit' }; }
     let plan = steps.map(s => ({ etape: s.etape, livrable: s.livrable, source: s.source }));
     const mine = plan.filter(p => p.source === 'dit'); const meth = plan.filter(p => p.source !== 'dit');
     if (plan.length > 9) { const keep = new Set([...mine, ...meth.slice(0, Math.max(3, 9 - mine.length))]); plan = plan.filter(p => keep.has(p)); }
@@ -882,6 +1050,7 @@
     /* --- risques --- */
     const lib = [...(isClip ? RISKS.clip : a.sales && dom !== 'probleme' ? RISKS.diffusion : RISKS[dom === 'podcast' ? 'musique' : dom] || []), ...(dom2 && RISKS[dom2] ? RISKS[dom2].filter(r => String(r.when) !== '() => true').slice(0, 2) : []), ...RISKS.general];
     let risques = lib.filter(r => { try { return r.when(c); } catch { return false; } }).map(r => ({ risque: r.r, gravite: r.g, probabilite: r.p, origine: r.o, signal: r.sig, parade: r.par, liste: true }));
+    if (a.couts && a.couts.budget !== null && a.couts.ecart < 0) risques.unshift({ risque: 'Dépassement de budget : ' + fmtEur(a.couts.total) + ' prévus pour ' + fmtEur(a.couts.budget) + ' annoncés', gravite: 'élevée', probabilite: 'élevée', origine: 'interne', signal: 'Le total des pièces dépasse déjà le budget de ' + fmtEur(-a.couts.ecart), parade: 'Retirer ou remplacer des pièces, revoir le budget, chercher de l’occasion', liste: false });
     // risques tirés du texte
     for (const p of a.people) risques.unshift({ risque: `${p.name} n’est pas disponible ou se désiste`, gravite: 'élevée', probabilite: 'moyenne', origine: 'externe', signal: `Pas de réponse claire de ${p.name} sous une semaine`, parade: `Lui demander une confirmation écrite et prévoir une solution de repli`, liste: false });
     const deadlineDays = st && st.echeance_date ? Math.ceil((new Date(st.echeance_date + 'T12:00:00') - a.today) / 864e5) : null;
@@ -895,14 +1064,18 @@
     /* --- hypothèses --- */
     const causeHyps = dom === 'probleme' ? a.cl.filter(c => /\b(je pense|surement|sans doute|peut-etre|probablement|ca doit etre|ca vient)\b/.test(c.f) && /\b(changer|remplacer|lampes?|condensateurs?|cable|alim|masse|potentiometre|jack|fusible|transfo|soudure|haut-parleur)\b/.test(c.f)).map(c => ({ texte: 'Cause supposée : ' + MAXW(clean(c.text.replace(/^(?:je pense|surement|sans doute|peut-être|probablement)\s*(?:que\s+)?/i, '')), 14), source: 'dit' })) : [];
     const hypotheses = [...causeHyps, ...a.hypDit.filter(h => !causeHyps.some(x => x.texte.includes(h.slice(0, 20)))).map(h => ({ texte: MAXW(h, 18), source: 'dit' })), ...((isClip ? HYPOS.clip : HYPOS[dom]) || HYPOS.general).map(h => ({ texte: h, source: 'liste' }))];
+    // l'hypothèse « à ce prix » cite les tarifs que tu as donnés
+    const tarifs = uniq(a.money.filter(m => m.price).map(m => m.text));
+    if (tarifs.length) hypotheses.forEach(h => { if (/à ce prix/.test(h.texte)) { h.texte = h.texte.replace('à ce prix', 'à ton prix (' + tarifs.slice(0, 3).join(', ') + ')'); h.source = 'deduit'; } });
     if (a.people.length) hypotheses.push({ texte: `${a.people.map(p => p.name).join(' et ')} ${a.people.length > 1 ? 'sont d’accord et disponibles' : 'est d’accord et disponible'}`, source: 'deduit' });
-    if (a.money.some(m => !m.limit && !m.goal) && (dom === 'achat' || dom === 'fabrication')) hypotheses.push({ texte: 'Le budget annoncé couvre l’ensemble (accessoires, port, imprévus)', source: 'deduit' });
+    if (a.money.some(m => !m.limit && !m.goal && !m.past && !m.price) && (dom === 'achat' || dom === 'fabrication')) hypotheses.push({ texte: 'Le budget annoncé couvre l’ensemble (accessoires, port, imprévus)', source: 'deduit' });
 
     /* --- SWOT --- */
     const owned = a.equip.filter(e => (e.kind === 'possede' || e.kind === 'lieu') && e.f !== 'materiel').map(e => e.item);
     const forces = uniq([...a.skills.map(s => MAXW(s, 14)),
       ...(owned.length && !a.skills.some(s => owned.some(o => fold(s).includes(fold(o)))) ? ['Matériel ou lieu déjà disponible : ' + uniq(owned).join(', ')] : []),
-      ...(a.money.some(m => !m.limit && !m.goal && !m.price) ? ['Budget déjà estimé (' + a.money.find(m => !m.limit && !m.goal && !m.price).text.replace(/^(environ)\s+/i, '≈ ') + ')'] : []),
+      ...(a.money.some(m => m.past) ? ['Investissement déjà fait (' + a.money.find(m => m.past).text + ')'] : []),
+      ...(a.money.some(m => !m.limit && !m.goal && !m.price && !m.past) ? ['Budget déjà estimé (' + a.money.find(m => !m.limit && !m.goal && !m.price && !m.past).text.replace(/^(environ)\s+/i, '≈ ') + ')'] : []),
       ...(() => { const r = a.roles.filter(x => !/mairie|region|departement|drac|prefecture|banque|urssaf|sacem|cnm|adami|spedidam|guso|france travail|pole emploi|bureau|conseil/.test(fold(x.role))).map(x => x.role); return r.length ? ['Appuis identifiés : ' + r.slice(0, 3).join(', ')] : []; })()]).slice(0, 6);
     const opportunites = a.opps.map(o => MAXW(o, 16)).slice(0, 4);
     const faiblesses = [];
@@ -913,14 +1086,20 @@
     if (a.vague.length) faiblesses.push('Formulation floue : ' + a.vague.slice(0, 3).join(', '));
 
     /* --- dépendances --- */
-    const dependances = uniq([...a.orgs, ...a.people.map(p => `${p.name} (${clean(p.ctx.replace(p.name, '').trim())})`), ...a.roles.filter(r => /mairie|prefecture|region|departement|drac|sacem|banque|bureau|conseil|fournisseur|distributeur|imprimeur|urssaf|guso|label|programmateur/.test(fold(r.role))).map(r => cap(r.role))]).slice(0, 6);
+    const dependances = uniq([...a.orgs, ...a.people.map(p => `${p.name} (${clean(p.ctx.replace(p.name, '').trim())})`), ...a.roles.filter(r => /mairie|prefecture|region|departement|drac|sacem|banque|bureau|conseil|fournisseur|distributeur|imprimeur|urssaf|guso|label|programmateur|afdas|opco|uniformation|cpf|caf|cnc/.test(fold(r.role))).map(r => cap(r.role))]).slice(0, 6);
 
     /* --- critères de réussite --- */
     const crit = [];
     for (const t of [...a.money.filter(x => x.goal).map(x => ({ text: x.text, end: x.end })), ...a.targets.filter(x => !/^(heures?|jours?|semaines?|mois)$/.test(x.noun))].slice(0, 3)) { const dur = a.durations.find(d => Math.abs(d.start - t.end) < 40); crit.push(cap(clean('Atteindre ' + t.text + (dur ? ' ' + dur.text : '')))); }
-    if (dom === 'fabrication') a.specs.filter(s => !/durée/.test(s.kind)).slice(0, 3).forEach(s => crit.push(`Mesure conforme : ${s.text} (${s.kind})`));
+    if (dom === 'fabrication') {
+      // une valeur dans une phrase d'objectif (« doit baisser de 5 degrés ») est le critère principal
+      const goalSpec = s => { const cc = a.cl.find(x => s.start >= x.start && s.start <= x.end); return cc && /\b(?:doit|doivent|baisser|abaisser|reduire|gagner|atteindre|monter a|tenir|descendre|augmenter|objectif|au moins|jusqu'a)\b/.test(cc.f); };
+      const sp = a.specs.filter(s => !/durée/.test(s.kind)).sort((x, y) => goalSpec(y) - goalSpec(x));
+      sp.slice(0, 3).forEach(s => crit.push(goalSpec(s) ? `Objectif mesuré atteint : ${cap(clean((a.cl.find(x => s.start >= x.start && s.start <= x.end) || { text: s.text }).text.replace(/^(?:il\s+(?:faut|faudrait|faudra)|(?:il|elle|ca|ça)\s+doit|doit)\s+/i, '')))}` : `Mesure conforme : ${s.text} (${s.kind})`));
+    }
     if (st && st.echeance_date) crit.push('Terminé avant le ' + fmtFr(st.echeance_date));
-    const bud = a.money.find(m => !m.goal && !m.price); if (bud) crit.push('Budget respecté : ' + bud.text.replace(/^(environ|pas plus de|maximum|max|moins de)\s+/i, ''));
+    if (a.couts) crit.push(a.couts.budget !== null ? 'Coût total (' + fmtEur(a.couts.total) + ') dans le budget de ' + fmtEur(a.couts.budget) : 'Coût total tenu : ' + fmtEur(a.couts.total));
+    else { const bud = a.money.find(m => !m.goal && !m.price && !m.past && !m.piece); if (bud) crit.push('Budget respecté : ' + bud.text.replace(/^(environ|pas plus de|maximum|max|moins de)\s+/i, '')); }
     if (!crit.length) crit.push('Un résultat observable atteint à l’échéance (à chiffrer dans l’onglet Développer)');
 
     /* --- verdict --- */
@@ -939,6 +1118,6 @@
     };
   }
 
-  const api = { structure, eprouver, analyseText, fold, findDates, findMoney, findTargets, version: '1.0' };
+  const api = { structure, eprouver, analyseText, fold, findDates, findMoney, findTargets, version: '1.3' };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.ForgeEngine = api;
 })(typeof window !== 'undefined' ? window : globalThis);

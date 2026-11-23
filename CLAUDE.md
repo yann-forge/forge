@@ -16,6 +16,7 @@ Forge est intelligente mais **jamais générative ni créative**. Le moteur extr
 
 | Fichier | Rôle |
 |---|---|
+| `lexique.js` | Vocabulaire du moteur (données seulement) : domaines et mots-clés pondérés, matériel nommé (GEAR, lu avant le matériel générique), rôles, publics, composants, mots flous. Enrichir ici en priorité : aucune logique ne change. |
 | `engine.js` | Moteur local hors ligne. `structure(text, {cats, today})` et `eprouver(text, structure, {today})`. Exporté en `window.ForgeEngine` et `module.exports`. Constante `version`. |
 | `app.js` | Interface, stockage localStorage (`forge3.ideas.v1`, `forge3.settings.v1`), carte, PDF, appels API Claude facultatifs. Constante `APP_VERSION`. |
 | `report.js` | Bouton « Signaler une erreur », stockage `forge3.reports.v1`, export JSON, ticket GitHub pré-rempli. Partagé avec la version artefact. |
@@ -29,13 +30,21 @@ Charte : fond sombre, violet `#7b4dd6`, mauve `#c49be6`, vert `#4fd1a0`, police 
 ## Tests : obligatoires
 
 ```
-node tests/all.js        # cohérence + jeux développement, contrôle, aveugle, signalements
+node tests/all.js        # cohérence + jeux développement, contrôle, aveugle, signalements, reformulations
 node tests/all.js -v     # avec le détail
 node tests/bench.js -v --only=MUS-2            # un scénario
 SET=./feedback.js node tests/bench.js -v       # un jeu précis
 ```
 
-Format d'un scénario (voir l'en-tête de `tests/scenarios.js`) : `steps` = `raw` puis `prec` ou `ans:<critère>` ; `expect` cumulatif par étape : `dom`, `nat`, `S/M/A/R/T` (`ok`, `partiel`, `absent`, `!absent`, `ok*`), `due`, `title`, listes de fragments attendus `res/act/plan/risk/hyp/dep/crit/force/faib/opp`, fragments interdits `noRisk/noPlan/noRes`. Dans `tests/feedback.js`, ajouter `today` (date du signalement) et `source` (id du signalement).
+Photo de référence : `tests/baseline/moteur-1.0.json` contient toutes les sorties du moteur 1.0 sur tous les jeux. Avant toute refonte : `node tests/snapshot.js --compare=tests/baseline/moteur-1.0.json` liste champ par champ ce qui change. Chaque écart doit être une amélioration expliquée dans le commit ; un écart inexpliqué est une régression. Après une version validée, prendre une nouvelle photo (`node tests/snapshot.js`).
+
+Jeux aveugles : `tests/blind3.js` est le jeu de MESURE actuel (non bloquant, ne jamais régler le moteur dessus ni modifier ses attentes). Quand on corrige ses défauts, il devient un jeu d'entraînement (bloquant) et il faut écrire un nouveau jeu aveugle AVANT d'exécuter le moteur dessus. `blind2.js` est un ancien aveugle devenu entraînement.
+
+`tests/couts.js` : listes de pièces chiffrées et totaux attendus (déjà payé, à payer, total, budget). Règles : pièce sans statut = à payer ; « 2 × à 3 € » = prix unitaire ; « pour 6 € » = prix global ; tarifs de vente, entrées, contreparties et recettes exclus ; pas de bloc coûts pour un montant isolé.
+
+`tests/reformulations.js` : variantes pièges (mot « problème » dans un projet, rôle des montants, lexique son, actions mal orthographiées, statut) et cas témoins inverses. Un correctif doit faire passer les variantes sans casser les témoins.
+
+Format d'un scénario (voir l'en-tête de `tests/scenarios.js`) : `steps` = `raw` puis `prec` ou `ans:<critère>` ; `expect` cumulatif par étape : `dom`, `nat`, `S/M/A/R/T` (`ok`, `partiel`, `absent`, `!absent`, `ok*`), `due`, `title`, listes de fragments attendus `res/act/plan/risk/hyp/dep/crit/force/faib/opp`, fragments interdits `noRisk/noPlan/noRes/noAct/noCrit/noFaib/noHyp`, `noTitle`, état `!ok`. Dans `tests/feedback.js`, ajouter `today` (date du signalement) et `source` (id du signalement).
 
 Règles :
 1. Aucun commit sur `main` si `node tests/all.js` échoue.

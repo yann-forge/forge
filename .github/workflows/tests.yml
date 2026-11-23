@@ -1,0 +1,14 @@
+name: Tests du moteur
+on:
+  push:
+  pull_request:
+jobs:
+  bancs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Cohérence et quatre jeux de scénarios
+        run: node tests/all.js -v

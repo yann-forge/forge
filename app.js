@@ -3,7 +3,7 @@
 
 const LS_IDEAS = 'forge3.ideas.v1';
 const LS_SETTINGS = 'forge3.settings.v1';
-const APP_VERSION = '3.1.1'; /* à incrémenter à chaque mise à jour, avec CACHE dans sw.js */
+const APP_VERSION = '3.3.0'; /* à incrémenter à chaque mise à jour, avec CACHE dans sw.js */
 /* Premier lancement : reprise des idées et réglages d'une version précédente installée sur la même adresse */
 try {
   for (const p of ['forge2', 'forge']) {
@@ -290,6 +290,7 @@ const busy = new Set();
 const engineMode = () => settings.engine || 'local';
 const localText = idea => [idea.raw, ...idea.complements.map(c => c.text)].map(t => String(t).trim().replace(/[.!?]*$/, '.')).join(' ');
 function structureLocal(idea, silent) {
+  if (!window.ForgeEngine) { toast('Moteur local absent : le fichier engine.js manque sur le site (voir Réglages)', 6000); return; }
   const cats = settings.categories.length ? settings.categories : DEFAULT_CATS;
   idea.structure = ForgeEngine.structure(localText(idea), { cats, today: today() });
   idea.structuredAt = Date.now();
@@ -300,6 +301,7 @@ function structureLocal(idea, silent) {
   if (current === 'detail' && openId === idea.id) renderDetail();
 }
 function analyseLocal(idea) {
+  if (!window.ForgeEngine) { toast('Moteur local absent : le fichier engine.js manque sur le site (voir Réglages)', 6000); return; }
   if (!idea.structure) structureLocal(idea, true);
   idea.analyse = ForgeEngine.eprouver(localText(idea), idea.structure, { today: today() });
   mergeSteps(idea); idea.status = 'eprouvee'; idea.updated = Date.now(); persistIdea(idea);
@@ -509,6 +511,19 @@ function saidCard(idea) {
     <button class="btn ghost" id="comp-open">🎙 Compléter</button></div>`;
 }
 
+const eur = v => (Math.round(v * 100) / 100).toLocaleString('fr-FR') + ' €';
+/* Coûts du projet calculés par le moteur local à partir des montants que tu as écrits */
+function costsCard(s) {
+  const c = s.couts; if (!c || !A(c.pieces).length) return '';
+  const row = p => `<div class="cost-row"><span>${esc(p.nom)}${p.detail ? ` <small class="muted">${esc(p.detail)}</small>` : ''}</span><b>${eur(p.montant)}</b></div>`;
+  const paid = c.pieces.filter(p => p.statut === 'paye'), todo = c.pieces.filter(p => p.statut !== 'paye');
+  const bud = c.budget !== null && c.budget !== undefined;
+  return `<div class="block"><div class="block-head"><h3>Coûts</h3><span class="src-tag">Calcul sur tes montants</span></div>
+    ${paid.length ? `<div class="cost-h">Déjà payé</div>${paid.map(row).join('')}<div class="cost-sub"><span>Sous-total</span><b>${eur(c.deja)}</b></div>` : ''}
+    ${todo.length ? `<div class="cost-h">À payer</div>${todo.map(row).join('')}<div class="cost-sub"><span>Sous-total</span><b>${eur(c.reste)}</b></div>` : ''}
+    <div class="cost-total"><span>Coût total du projet</span><b>${eur(c.total)}</b></div>
+    ${bud ? `<div class="cost-bud ${c.ecart < 0 ? 'over' : 'ok'}"><span>Budget annoncé ${eur(c.budget)}</span><b>${c.ecart < 0 ? 'Dépassement ' + eur(-c.ecart) : 'Marge ' + eur(c.ecart)}</b></div>` : ''}</div>`;
+}
 function ficheTab(idea) {
   const s = idea.structure, m = maturity(idea), u = U(idea), q = quadrant(u);
   const cats = settings.categories.length ? settings.categories : DEFAULT_CATS;
@@ -519,6 +534,7 @@ function ficheTab(idea) {
     ${A(s.specs).length ? `<p class="small" style="margin:10px 0 0"><b>Caractéristiques visées :</b> ${A(s.specs).map(esc).join(', ')}</p>` : ''}
     ${A(s.composants).length ? `<p class="small" style="margin:6px 0 0"><b>Composants cités :</b> ${A(s.composants).map(esc).join(', ')}</p>` : ''}
     ${A(s.contraintes).length ? `<p class="small" style="margin:6px 0 0"><b>Contraintes :</b> ${A(s.contraintes).map(esc).join(' · ')}</p>` : ''}</div>`;
+  h += costsCard(s);
   h += `<div class="block"><div class="block-head"><h3>Maturité</h3><span class="small muted">${m.hint}</span></div>
     <div class="mat-score"><b>${m.ok}</b><span>sur 5 critères · ${m.label}</span></div>
     <div class="meter"><span style="width:${Math.round(m.w * 100)}%;background:${stateColor(m.w)}"></span></div>
@@ -1273,6 +1289,16 @@ async function exportFichePdf(idea) {
       bl.forEach(([kd, c, ls]) => { P.font(kd, 9.5, c); ls.forEach(l => { doc.text(l, F.x + 46, yy); yy += P.lh(9.5); }); });
       F.y += hh; P.stroke(C.line, 0.2); doc.line(F.x + 13, F.y - 1, F.x + F.w, F.y - 1); F.y += 1.5;
     });
+  }
+
+  if (s.couts && A(s.couts.pieces).length) {
+    const c = s.couts; F.section('Coûts du projet');
+    const line = (l, r, sz, col, bold) => { F.ensure(6); P.font(bold ? 'b' : 'r', sz, col); doc.text(l, F.x + 2, F.y + 4); doc.text(r, F.x + F.w - 2, F.y + 4, { align: 'right' }); F.y += P.lh(sz) + 1.2; };
+    const grp = (title, st, sub) => { const ps = c.pieces.filter(p => (st === 'paye') === (p.statut === 'paye')); if (!ps.length) return; line(title, '', 9, C.muted, true); ps.forEach(p => line('  ' + p.nom + (p.detail ? ' (' + p.detail + ')' : ''), eur(p.montant), 9.5, C.ink)); line('  Sous-total', eur(sub), 9.5, C.ink, true); F.gap(1); };
+    grp('Déjà payé', 'paye', c.deja); grp('À payer', 'a_payer', c.reste);
+    line('Coût total du projet', eur(c.total), 11, C.ink, true);
+    if (c.budget !== null && c.budget !== undefined) line('Budget annoncé ' + eur(c.budget), c.ecart < 0 ? 'Dépassement ' + eur(-c.ecart) : 'Marge ' + eur(c.ecart), 10, c.ecart < 0 ? C.red : C.green, true);
+    F.gap(2);
   }
 
   if (a) {

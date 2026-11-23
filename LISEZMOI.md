@@ -30,6 +30,11 @@ Voir `MISE-A-JOUR.md` : signaler une erreur depuis l'app, la faire corriger par 
 
 ## Historique
 
+- 3.3.0 : moteur 1.3 — coûts du projet : chaque pièce chiffrée est repérée quelle que soit l'écriture (parenthèses, « à », « pour », prix avant le nom, quantités, tarif à la journée × nombre de jours), classée déjà payée ou à payer, additionnée (déjà payé, reste à payer, coût total) et comparée au budget annoncé (marge ou risque de dépassement). Tarifs de vente, entrées, contreparties et objectifs de recette ne sont pas comptés.
+- 3.2.1 : moteur 1.2 — corrections issues du jeu aveugle n°2 : « IA » n'est plus une personne, climatiseur à eau sans risque frigorigène (risques humidité et eau stagnante), coût de chaque pièce et somme, critère principal tiré de la phrase d'objectif, casting et mineur pour un clip, fournisseur et stock pour du merch, pièces de dossier listées, prénoms en minuscules, Afdas et OPCO, étapes déjà faites retirées du plan. Mesure sur un nouveau jeu aveugle : 87,5 %.
+- 3.2.0 : moteur 1.1 — nature décidée par votes (un mot isolé comme « problème » ne fait plus basculer un projet), vocabulaire sorti dans lexique.js (matériel son précis), montants distingués (investissement déjà fait, tarif, budget), actions en liste et participes (« posé des tarifs »), public « cible : … ».
+- 3.1.3 : message clair si engine.js manque sur le site.
+- 3.1.2 : bouton « Installer Forge » dans Réglages.
 - 3.1.1 : hors ligne fiabilisé (un fichier manquant ne bloque plus le cache, délai réseau de 4 s, état et réparation dans Réglages).
 - 3.1.0 : bouton « Signaler une erreur », envoi vers GitHub, mise à jour automatique, bancs d'essai automatisés (`node tests/all.js`).
 - 3.0 : onglets Fiche, Développer, Risques, Plan, Carte ; moteur local hors ligne.

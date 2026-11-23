@@ -1,0 +1,39 @@
+# Un ticket dont le titre commence par [Signalement], ouvert par le propriétaire du dépôt,
+# lance Claude : il ajoute le cas aux tests, corrige le moteur et ouvre une pull request.
+name: Correction d'un signalement
+on:
+  issues:
+    types: [opened]
+jobs:
+  corriger:
+    if: github.actor == github.repository_owner && startsWith(github.event.issue.title, '[Signalement]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency: claude-forge
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Dépôt ${{ github.repository }}, ticket #${{ github.event.issue.number }}.
+            Lis le ticket avec : gh issue view ${{ github.event.issue.number }}
+            Applique la procédure « Traiter un signalement » de CLAUDE.md, à la lettre.
+            Travaille sur une branche signalement-${{ github.event.issue.number }}, puis pousse-la et ouvre une pull request
+            vers main dont la description contient « Closes #${{ github.event.issue.number }} », le diagnostic et la sortie de node tests/all.js.
+            Termine par un commentaire sur le ticket qui résume en 5 lignes ce qui a été corrigé et ce qui ne l'a pas été.
+          claude_args: |
+            --max-turns 60
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(node:*),Bash(git:*),Bash(gh issue:*),Bash(gh pr:*)"

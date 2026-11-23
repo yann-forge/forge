@@ -1,6 +1,6 @@
 /* Service worker Forge : réseau d'abord (mises à jour automatiques), cache en secours (hors ligne). */
-const CACHE = 'forge3-3.1.1'; /* = APP_VERSION de app.js */
-const ASSETS = ['./', 'index.html', 'style.css', 'engine.js', 'app.js', 'report.js', 'manifest.webmanifest',
+const CACHE = 'forge3-3.3.0'; /* = APP_VERSION de app.js */
+const ASSETS = ['./', 'index.html', 'style.css', 'lexique.js', 'engine.js', 'app.js', 'report.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png',
   'vendor/jspdf.umd.min.js', 'vendor/pdf-fonts.js'];
 const TIMEOUT = 4000; /* au-delà, on sert le cache : évite l'attente quand le réseau est présent mais ne répond pas */
